@@ -224,6 +224,7 @@ class DeepseekProvider(ProviderInterface):
             "usage": None,
             "finish_reason": None,
         }
+        done_received = False
 
         async with client.stream(
             "POST",
@@ -241,6 +242,8 @@ class DeepseekProvider(ProviderInterface):
 
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
+                    done_received = True
+                    lib_logger.info(f"DeepSeek stream received [DONE] for {model}")
                     break
 
                 try:
@@ -252,6 +255,12 @@ class DeepseekProvider(ProviderInterface):
                 chunk["model"] = model
                 self._accumulate_stream_chunk(accumulator, chunk)
                 yield litellm.ModelResponseStream(**chunk)
+
+        if not done_received and not accumulator.get("finish_reason"):
+            raise RuntimeError(
+                f"DeepSeek stream ended prematurely for {model}: "
+                f"no [DONE] marker and no finish_reason received"
+            )
 
         final_response = self._final_response_from_accumulator(model, accumulator)
         file_logger.log_final_response(final_response)
