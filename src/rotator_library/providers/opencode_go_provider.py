@@ -180,13 +180,6 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         return None
 
     def _session_id_for(self, messages: Optional[List[Dict[str, Any]]]) -> str:
-        """
-        Derive the stable per-conversation id OpenCode Go requires.
-
-        The opening user turn is the only part of a request that stays identical
-        as the conversation grows, so it anchors the id. Requests without one
-        (embeddings, model discovery) have no conversation and get a fresh id.
-        """
         anchor = self._first_user_text(messages)
         if not anchor:
             return str(uuid.uuid4())
@@ -488,8 +481,6 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         credential = kwargs.pop("credential_identifier", "")
         cred = self._parse_credential(credential)
         kwargs.pop("transaction_context", None)
-        # Derived before any model-specific rewriting so one conversation keeps
-        # the same id regardless of which model it is routed to.
         session_id = self._session_id_for(kwargs.get("messages"))
         model = kwargs.get("model", "")
         model_bare = model.split("/")[-1] if "/" in model else model

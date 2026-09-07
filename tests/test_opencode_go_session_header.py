@@ -1,24 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 b3nw
-
-"""
-OpenCode Go requires an `x-opencode-session` header on every request.
-
-Upstream announcement (same text filed against several clients):
-- https://github.com/zai-org/feedback/issues/492
-- https://github.com/Kilo-Org/kilocode/issues/13723
-
-    "Starting 09/05, requests without an x-opencode-session header will error on
-     our side ... Any stable UUID per conversation works; snip it just needs to be
-     consistent across requests in the same session."
-
-Two things to pin: the header is always present, and its value does not change
-between turns of one conversation.
-
-`litellm.acompletion` / `litellm.aembedding` are the only things stubbed. They
-are the paid vendor boundary - a real call costs money and needs credentials.
-Everything below them is the real provider.
-"""
+# Copyright (c) 2026 COJEAN Kévin
 
 import uuid
 from unittest.mock import patch
@@ -31,8 +12,6 @@ from rotator_library.providers.opencode_go_provider import (
     OpencodeProvider,
 )
 
-# Deliberately not a deepseek/kimi/glm name: those trigger unrelated
-# model-specific request rewriting that has nothing to do with headers.
 TEST_MODEL = "opencode_go/test-model"
 TEST_CREDENTIAL = "sk-opencode-test-key"
 
