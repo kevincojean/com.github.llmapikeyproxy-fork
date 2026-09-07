@@ -25,8 +25,8 @@ if not lib_logger.handlers:
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
-# Fixed namespace so a conversation keeps its session id across proxy restarts.
-OPENCODE_SESSION_NAMESPACE = uuid.UUID("1b4d9a2e-7c33-4f8a-9f21-6a5c0e8d47b2")
+# Deterministic namespace for session IDs - same input always yields same UUID across restarts
+OPENCODE_SESSION_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "opencode-go-session")
 
 
 class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
@@ -162,6 +162,13 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
 
     @staticmethod
     def _first_user_text(messages: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+        """
+        Extract the first user message text to anchor the session ID.
+
+        Returns the text content of the first message with role='user', or None
+        if no user message exists. Handles both string content and multipart
+        content (list of dicts with 'text' keys).
+        """
         for message in messages or []:
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
