@@ -88,9 +88,6 @@ FAIR_CYCLE_STORAGE_KEY = "__fair_cycle__"
 # Logging
 LIB_LOGGER_NAME = "rotator_library"
 
-# Request kwarg carrying the inferred session id to providers whose upstream API
-# demands a stable per-conversation id. Kept here so the executor and the
-# provider that pops it agree on one name instead of two literals.
 UPSTREAM_SESSION_ID_KWARG = "upstream_session_id"
 
 __all__ = [

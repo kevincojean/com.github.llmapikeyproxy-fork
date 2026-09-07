@@ -37,10 +37,6 @@ rules:
     codex:
       - "feat(codex): Responses API rewrite, dynamic model discovery, and OAuth exports"
       - "fix(codex): return Codex CLI-compatible /v1/models response"
-    # The `opencode-go` feature id uses a hyphen while its topic prefix uses an
-    # underscore, so check-stack.py cannot match the canonical subject back to
-    # the feature. Both subjects must be listed here, keyed by the literal
-    # prefix text, same as the `models:` exception below.
     opencode_go:
       - "feat(opencode_go): add Opencode Go provider with 3-window quota tracking and scraped balance"
       - "fix(opencode_go): send required x-opencode-session header on Go requests"

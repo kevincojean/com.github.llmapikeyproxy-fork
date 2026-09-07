@@ -24,9 +24,6 @@ lib_logger.propagate = False
 if not lib_logger.handlers:
     lib_logger.addHandler(logging.NullHandler())
 
-# OpenCode Go rejects inference requests without this header as of 2026-09-05.
-# The value must be a UUID that stays constant for every request in one
-# conversation. See https://github.com/zai-org/feedback/issues/492
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 
