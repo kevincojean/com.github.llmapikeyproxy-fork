@@ -4,6 +4,7 @@
 import os
 import logging
 import time
+import uuid
 from typing import List, Dict, Any, Optional, Union, AsyncGenerator, TYPE_CHECKING
 import httpx
 import litellm
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
 
 from .provider_interface import ProviderInterface
 from .utilities.opencode_quota_tracker import OpencodeQuotaTracker
+from ..core.constants import UPSTREAM_SESSION_ID_KWARG
 from ..model_definitions import ModelDefinitions
 from ..error_handler import mask_credential
 
@@ -22,6 +24,11 @@ lib_logger.propagate = False
 if not lib_logger.handlers:
     lib_logger.addHandler(logging.NullHandler())
 
+# OpenCode Go rejects inference requests without this header as of 2026-09-05.
+# The value must be a UUID that stays constant for every request in one
+# conversation. See https://github.com/zai-org/feedback/issues/492
+OPENCODE_SESSION_HEADER = "x-opencode-session"
+
 
 class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
     """
@@ -29,6 +36,8 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
     """
 
     provider_env_name = "opencode_go"
+
+    requires_upstream_session_id = True
 
     SUPPORTED_PARAMS = {
         "model",
@@ -130,20 +139,39 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         self._balance_cache = {}
         self._quota_refresh_interval = 300
         self.model_definitions = ModelDefinitions()
+        # Model discovery has no conversation to belong to, so one id per
+        # process is the most stable value available for it.
+        self._discovery_session_id = str(uuid.uuid4())
         
         masked_wrk = mask_credential(self.global_workspace_id) if self.global_workspace_id else "None"
         lib_logger.debug(f"OpencodeProvider initialized: base={self.api_base}, global_wrk={masked_wrk}")
 
-    def _get_headers(self, auth_cookie: Optional[str] = None) -> Dict[str, str]:
+    def _get_headers(
+        self,
+        auth_cookie: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Return the custom headers required by OpenCode."""
         headers = {
             "HTTP-Referer": "https://opencode.ai/",
             "X-Title": "opencode",
             "User-Agent": "opencode/1.0",
         }
+        if session_id:
+            headers[OPENCODE_SESSION_HEADER] = session_id
         if auth_cookie:
             headers["Cookie"] = f"auth={auth_cookie}; oc_locale=en"
         return headers
+
+    @staticmethod
+    def _pop_session_id(kwargs: Dict[str, Any]) -> str:
+        """
+        Take the session id out of kwargs, minting one if core did not supply it.
+
+        Popping is required: the value is transport metadata, not a completion
+        parameter, and it must not reach the request body.
+        """
+        return kwargs.pop(UPSTREAM_SESSION_ID_KWARG, None) or str(uuid.uuid4())
 
     def _parse_credential(self, credential_identifier: str) -> Dict[str, str]:
         """
@@ -195,7 +223,10 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
             models_url = f"{go_base}/models"
             response = await client.get(
                 models_url,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    OPENCODE_SESSION_HEADER: self._discovery_session_id,
+                },
                 timeout=15.0,
             )
             response.raise_for_status()
@@ -438,6 +469,7 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         credential = kwargs.pop("credential_identifier", "")
         cred = self._parse_credential(credential)
         kwargs.pop("transaction_context", None)
+        session_id = self._pop_session_id(kwargs)
         model = kwargs.get("model", "")
         model_bare = model.split("/")[-1] if "/" in model else model
 
@@ -461,7 +493,7 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
             kwargs.pop("max_tokens")
 
         kwargs["model"] = "openai/" + model_bare
-        extra_headers = self._get_headers(cred["auth_cookie"])
+        extra_headers = self._get_headers(cred["auth_cookie"], session_id=session_id)
         existing_headers = kwargs.get("extra_headers") or {}
         kwargs["extra_headers"] = {**existing_headers, **extra_headers}
         actual_key = cred["api_key"]
@@ -492,10 +524,11 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         credential = kwargs.pop("credential_identifier", "")
         cred = self._parse_credential(credential)
         kwargs.pop("transaction_context", None)
+        session_id = self._pop_session_id(kwargs)
         model = kwargs.get("model", "")
         model_bare = model.split("/")[-1] if "/" in model else model
         kwargs["model"] = "openai/" + model_bare
-        extra_headers = self._get_headers(cred["auth_cookie"])
+        extra_headers = self._get_headers(cred["auth_cookie"], session_id=session_id)
         existing_headers = kwargs.get("extra_headers") or {}
         kwargs["extra_headers"] = {**existing_headers, **extra_headers}
         actual_key = cred["api_key"]
