@@ -88,8 +88,6 @@ FAIR_CYCLE_STORAGE_KEY = "__fair_cycle__"
 # Logging
 LIB_LOGGER_NAME = "rotator_library"
 
-UPSTREAM_SESSION_ID_KWARG = "upstream_session_id"
-
 __all__ = [
     # From config package
     "DEFAULT_ROTATION_MODE",
@@ -150,6 +148,4 @@ __all__ = [
     "FAIR_CYCLE_STORAGE_KEY",
     # Logging
     "LIB_LOGGER_NAME",
-    # Provider request kwargs
-    "UPSTREAM_SESSION_ID_KWARG",
 ]

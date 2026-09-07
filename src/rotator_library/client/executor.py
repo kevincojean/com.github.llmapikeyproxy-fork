@@ -19,7 +19,6 @@ import os
 import random
 import re
 import time
-import uuid
 from typing import (
     Any,
     AsyncGenerator,
@@ -61,7 +60,6 @@ from ..core.constants import (
     DEFAULT_STREAM_RETRY_ON_REASONING_ONLY,
     DEFAULT_RATE_LIMIT_MAX_RETRY_AFTER,
     ENV_PREFIX_MAX_RETRIES,
-    UPSTREAM_SESSION_ID_KWARG,
 )
 from ..request_sanitizer import sanitize_request_payload
 from ..transaction_logger import TransactionLogger
@@ -540,29 +538,7 @@ class RequestExecutor:
         if context.transaction_logger:
             kwargs["transaction_context"] = context.transaction_logger.get_context()
 
-        self._inject_upstream_session_id(
-            self._get_plugin_instance(provider), kwargs, context
-        )
-
         return kwargs
-
-    @staticmethod
-    def _inject_upstream_session_id(
-        plugin: Optional[Any],
-        kwargs: Dict[str, Any],
-        context: "RequestContext",
-    ) -> None:
-        """
-        Hand the inferred session id to providers that must forward one upstream.
-
-        Only opted-in plugins receive the kwarg, so providers that would blindly
-        pass it on to LiteLLM are left untouched. The fallback covers requests
-        that produced no session anchors: a fresh id is not stable across turns,
-        but it keeps the upstream header present instead of absent.
-        """
-        if plugin is None or not getattr(plugin, "requires_upstream_session_id", False):
-            return
-        kwargs[UPSTREAM_SESSION_ID_KWARG] = context.session_id or str(uuid.uuid4())
 
     def _log_acquired_credential(
         self,

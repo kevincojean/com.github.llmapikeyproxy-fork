@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 from .provider_interface import ProviderInterface
 from .utilities.opencode_quota_tracker import OpencodeQuotaTracker
-from ..core.constants import UPSTREAM_SESSION_ID_KWARG
 from ..model_definitions import ModelDefinitions
 from ..error_handler import mask_credential
 
@@ -26,6 +25,9 @@ if not lib_logger.handlers:
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
+# Fixed namespace so a conversation keeps its session id across proxy restarts.
+OPENCODE_SESSION_NAMESPACE = uuid.UUID("1b4d9a2e-7c33-4f8a-9f21-6a5c0e8d47b2")
+
 
 class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
     """
@@ -33,8 +35,6 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
     """
 
     provider_env_name = "opencode_go"
-
-    requires_upstream_session_id = True
 
     SUPPORTED_PARAMS = {
         "model",
@@ -161,14 +161,36 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         return headers
 
     @staticmethod
-    def _pop_session_id(kwargs: Dict[str, Any]) -> str:
-        """
-        Take the session id out of kwargs, minting one if core did not supply it.
+    def _first_user_text(messages: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+        for message in messages or []:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                parts = [
+                    str(part.get("text", "")).strip()
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                joined = "\n".join(part for part in parts if part)
+                if joined:
+                    return joined
+        return None
 
-        Popping is required: the value is transport metadata, not a completion
-        parameter, and it must not reach the request body.
+    def _session_id_for(self, messages: Optional[List[Dict[str, Any]]]) -> str:
         """
-        return kwargs.pop(UPSTREAM_SESSION_ID_KWARG, None) or str(uuid.uuid4())
+        Derive the stable per-conversation id OpenCode Go requires.
+
+        The opening user turn is the only part of a request that stays identical
+        as the conversation grows, so it anchors the id. Requests without one
+        (embeddings, model discovery) have no conversation and get a fresh id.
+        """
+        anchor = self._first_user_text(messages)
+        if not anchor:
+            return str(uuid.uuid4())
+        return str(uuid.uuid5(OPENCODE_SESSION_NAMESPACE, anchor))
 
     def _parse_credential(self, credential_identifier: str) -> Dict[str, str]:
         """
@@ -466,7 +488,9 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         credential = kwargs.pop("credential_identifier", "")
         cred = self._parse_credential(credential)
         kwargs.pop("transaction_context", None)
-        session_id = self._pop_session_id(kwargs)
+        # Derived before any model-specific rewriting so one conversation keeps
+        # the same id regardless of which model it is routed to.
+        session_id = self._session_id_for(kwargs.get("messages"))
         model = kwargs.get("model", "")
         model_bare = model.split("/")[-1] if "/" in model else model
 
@@ -521,7 +545,7 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         credential = kwargs.pop("credential_identifier", "")
         cred = self._parse_credential(credential)
         kwargs.pop("transaction_context", None)
-        session_id = self._pop_session_id(kwargs)
+        session_id = self._session_id_for(kwargs.get("messages"))
         model = kwargs.get("model", "")
         model_bare = model.split("/")[-1] if "/" in model else model
         kwargs["model"] = "openai/" + model_bare

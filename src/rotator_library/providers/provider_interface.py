@@ -103,11 +103,6 @@ class ProviderInterface(ABC, metaclass=SingletonABCMeta):
 
     skip_cost_calculation: bool = False
 
-    # Set True by providers whose upstream API demands a stable per-conversation
-    # id. The executor then injects UPSTREAM_SESSION_ID_KWARG into the request
-    # kwargs and the provider is responsible for popping it before the call.
-    requires_upstream_session_id: bool = False
-
     # Default rotation mode for this provider ("balanced" or "sequential")
     # - "balanced": Rotate credentials to distribute load evenly
     # - "sequential": Use one credential until exhausted, then switch to next
