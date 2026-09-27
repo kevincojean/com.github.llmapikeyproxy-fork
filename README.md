@@ -1,4 +1,18 @@
-# LLM API Key Proxy (Fork)
+# LLM API Key Proxy (Fork) [ARCHIVED]
+
+> [!WARNING]
+> ### ⚠️ ARCHIVED — SUCCEEDED BY OMNIROUTE-SLIM
+> **This repository is archived and no longer actively maintained.**
+>
+> All active development has transitioned to our new public project:
+> 👉 **[OmniRoute-Slim (b3nw/omniroute-slim)](https://github.com/b3nw/omniroute-slim)**
+>
+> **OmniRoute-Slim** is our streamlined, standalone AI model gateway and intelligent router. It provides a single OpenAI-compatible endpoint in front of OpenAI, Anthropic, Google Gemini, DeepSeek, xAI, Grok, Ollama, and more — featuring bidirectional zero-allocation streaming SSE conversion, reasoning delta support (`thinking`, `reasoning_content`), quota tracking, and automatic failover.
+>
+> **For new deployments and ongoing updates, please use [OmniRoute-Slim](https://github.com/b3nw/omniroute-slim).**
+>
+> ---
+> *This fork is preserved for historical reference and legacy deployment rollback only.*
 
 A personal fork of [Mirrowel/LLM-API-Key-Proxy](https://github.com/Mirrowel/LLM-API-Key-Proxy) with additional providers, fixes, and tooling.
 
@@ -665,9 +679,9 @@ MAX_RETRIES_NANOGPT=2
 
 ---
 
-## Fork Strategy
+## Fork Strategy & Archival
 
-This fork is maintained as a **linear commit stack** on top of `upstream/dev` — one squashed commit per feature area, no merge commits. Changes are folded into the correct commit using `fixup!` + `git rebase --autosquash`. See `AGENTS.md` for the full workflow.
+This fork was maintained as a **linear commit stack** on top of `upstream/dev` — one squashed commit per feature area, no merge commits. With the public release of **[OmniRoute-Slim](https://github.com/b3nw/omniroute-slim)**, this repository is now archived and development has concluded here. See `AGENTS.md` for the historical workflow.
 
 ---
 
