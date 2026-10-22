@@ -10,7 +10,7 @@ python-dotenv
 -e src/rotator_library
 
 # A library for calling LLM APIs with a consistent format
-litellm
+litellm==1.103.0
 
 filelock
 httpx
