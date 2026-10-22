@@ -9,7 +9,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "python-dotenv",
-    "litellm",
+    "litellm==1.103.0",
     "filelock",
     "httpx",
     "socksio",
