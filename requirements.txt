@@ -28,5 +28,6 @@ customtkinter
 
 # For building the executable
 pyinstaller
-pytest-mock
-pytest-asyncio
+pytest==9.1.1
+pytest-mock==3.17.0
+pytest-asyncio==1.4.0

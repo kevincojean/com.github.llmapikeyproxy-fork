@@ -113,6 +113,7 @@ class RequestContextBuilder:
             self._raise_no_provider(model)
 
         parent_log_dir = kwargs.pop("_parent_log_dir", None)
+        model_alias = model.split("/", 1)[1] if "/" in model else model
         resolved_model = self._model_resolver.resolve_model_id(model, provider)
         kwargs["model"] = resolved_model
 
@@ -154,6 +155,7 @@ class RequestContextBuilder:
             provider_config=scope["provider_config"],
             credential_secrets=scope["credential_secrets"],
             classifier=scope["classifier"],
+            model_alias=model_alias,
         )
 
     async def build_embedding_context(
@@ -208,4 +210,5 @@ class RequestContextBuilder:
             provider_config=scope["provider_config"],
             credential_secrets=scope["credential_secrets"],
             classifier=scope["classifier"],
+            model_alias=model.split("/", 1)[1] if "/" in model else model,
         )

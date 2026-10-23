@@ -604,6 +604,27 @@ Customize OAuth callback ports if defaults conflict:
 <details>
 <summary><b>Command-Line Arguments</b></summary>
 
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--host` | Host to bind the server to | `0.0.0.0` |
+| `--port` | Port to run the server on | `8000` |
+| `--env-file PATH` | Load this `.env` file instead of the one in the working directory | `$PROXY_ENV_FILE`, then `./.env` |
+| `--enable-request-logging` | Log request/response transactions with provider correlation | off |
+| `--enable-raw-logging` | Log raw unmodified HTTP payloads at the proxy boundary | off |
+| `--add-credential` | Launch the interactive credential tool and exit | off |
+
+`--env-file` takes precedence over `$PROXY_ENV_FILE`, which takes precedence over
+`./.env`. When an explicit file is given, its values override variables already
+present in the process environment. If the path does not exist, startup fails
+instead of falling back to `./.env`. This is the supported way to run the proxy
+against a config that lives outside the working directory, for example:
+
+```bash
+python src/proxy_app/main.py --env-file ~/.config/llm-api-key-proxy/.env --port 8000
+```
+
+### Provider Environment Variables
+
 ```bash
 # GitHub Copilot (OAuth Device Flow — use credential tool to authenticate)
 # Credentials stored in oauth_creds/copilot_oauth_*.json
@@ -662,6 +683,8 @@ MAX_RETRIES_NANOGPT=2
 # Log rotation (set in main.py automatically)
 # scripts/cleanup-logs.sh for transaction directory cleanup
 ```
+
+</details>
 
 ---
 

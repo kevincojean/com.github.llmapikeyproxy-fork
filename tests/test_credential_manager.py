@@ -13,13 +13,7 @@ NO network calls, NO API keys needed.
 
 import json
 import os
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
-
-from rotator_library.credential_manager import CredentialManager
 
 
 class TestCredentialDiscovery:

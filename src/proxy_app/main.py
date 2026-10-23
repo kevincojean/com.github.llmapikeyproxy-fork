@@ -33,7 +33,18 @@ parser.add_argument(
     action="store_true",
     help="Launch the interactive tool to add a new OAuth credential.",
 )
+parser.add_argument(
+    "--env-file",
+    type=str,
+    default=None,
+    help=(
+        "Path to the .env file to load. Defaults to $PROXY_ENV_FILE, "
+        "then .env in the working directory."
+    ),
+)
 args, _ = parser.parse_known_args()
+
+_INTERACTIVE = sys.stdin.isatty()
 
 # Add the 'src' directory to the Python path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -69,19 +80,27 @@ if getattr(sys, "frozen", False):
 else:
     _root_dir = Path.cwd()
 
-# Load main .env first
-load_dotenv(_root_dir / ".env")
+_env_override = args.env_file or os.getenv("PROXY_ENV_FILE")
+if _env_override:
+    ENV_FILE = Path(_env_override).expanduser().resolve()
+    if not ENV_FILE.is_file():
+        parser.error(f"--env-file not found: {ENV_FILE}")
+    load_dotenv(ENV_FILE, override=True)
+    print(f"📁 Loaded .env file: {ENV_FILE}")
+else:
+    ENV_FILE = _root_dir / ".env"
+    load_dotenv(ENV_FILE)
 
-# Load any additional .env files (e.g., gemini_cli_all_combined.env)
-_env_files_found = list(_root_dir.glob("*.env"))
-for _env_file in sorted(_root_dir.glob("*.env")):
-    if _env_file.name != ".env":  # Skip main .env (already loaded)
-        load_dotenv(_env_file, override=False)  # Don't override existing values
+    # Load any additional .env files (e.g., gemini_cli_all_combined.env)
+    _env_files_found = list(_root_dir.glob("*.env"))
+    for _env_file in sorted(_root_dir.glob("*.env")):
+        if _env_file.name != ".env":  # Skip main .env (already loaded)
+            load_dotenv(_env_file, override=False)  # Don't override existing values
 
-# Log discovered .env files for deployment verification
-if _env_files_found:
-    _env_names = [_ef.name for _ef in _env_files_found]
-    print(f"📁 Loaded {len(_env_files_found)} .env file(s): {', '.join(_env_names)}")
+    # Log discovered .env files for deployment verification
+    if _env_files_found:
+        _env_names = [_ef.name for _ef in _env_files_found]
+        print(f"📁 Loaded {len(_env_files_found)} .env file(s): {', '.join(_env_names)}")
 
 # Get proxy API key for display
 proxy_api_key = os.getenv("PROXY_API_KEY")
@@ -280,7 +299,7 @@ print(
 
 # --- Logging Configuration ---
 # Import path utilities here (after loading screen) to avoid triggering heavy imports early
-from rotator_library.utils.paths import get_logs_dir, get_data_file
+from rotator_library.utils.paths import get_logs_dir
 
 LOG_DIR = get_logs_dir(_root_dir)
 
@@ -379,9 +398,6 @@ litellm_logger.propagate = False
 
 # Now that logging is configured, log the module load time to debug file only
 logging.debug(f"Modules loaded in {_elapsed:.2f}s")
-
-# Load environment variables from .env file
-load_dotenv(_root_dir / ".env")
 
 # --- Configuration ---
 USE_EMBEDDING_BATCHER = False
@@ -2473,9 +2489,6 @@ if _webui_dist.is_dir() and os.environ.get("WEBUI_ENABLED", "true").lower() != "
 
 
 if __name__ == "__main__":
-    # Define ENV_FILE for onboarding checks using centralized path
-    ENV_FILE = get_data_file(".env")
-
     # Check if launcher TUI should be shown (no arguments provided)
     if len(sys.argv) == 1:
         # No arguments - show launcher TUI (lazy import)
@@ -2546,6 +2559,15 @@ if __name__ == "__main__":
     else:
         # Check if onboarding is needed
         if needs_onboarding():
+            if not _INTERACTIVE:
+                print(
+                    f"ERROR: no .env file found at {ENV_FILE}.\n"
+                    "Provide one with --env-file PATH or PROXY_ENV_FILE, "
+                    "or run interactively to complete first-time setup.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
             # Import console from rich for better messaging
             from rich.console import Console
             from rich.panel import Panel

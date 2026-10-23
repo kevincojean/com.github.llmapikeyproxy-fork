@@ -26,7 +26,6 @@ def vertex_provider(monkeypatch):
 
 
 class TestVertexProviderThinkingPolicy:
-    @pytest.mark.asyncio
     async def test_plain_request_does_not_auto_enable_thinking(self, vertex_provider):
         provider, _ = vertex_provider
         provider._non_stream_completion = AsyncMock(return_value="ok")
@@ -43,7 +42,6 @@ class TestVertexProviderThinkingPolicy:
         assert payload["model"] == "google/gemini-3.5-flash"
         assert "extra_body" not in payload
 
-    @pytest.mark.asyncio
     async def test_explicit_thinking_config_is_forwarded(self, vertex_provider):
         provider, _ = vertex_provider
         provider._non_stream_completion = AsyncMock(return_value="ok")
@@ -64,7 +62,6 @@ class TestVertexProviderThinkingPolicy:
         assert payload["extra_body"]["google"]["thought_tag_marker"] == "thought"
         assert "reasoning_effort" not in payload
 
-    @pytest.mark.asyncio
     async def test_reasoning_effort_passes_through_without_thinking_config(self, vertex_provider):
         provider, _ = vertex_provider
         provider._non_stream_completion = AsyncMock(return_value="ok")
@@ -81,7 +78,6 @@ class TestVertexProviderThinkingPolicy:
         assert payload["reasoning_effort"] == "medium"
         assert "extra_body" not in payload
 
-    @pytest.mark.asyncio
     async def test_explicit_thinking_wins_over_reasoning_effort(self, vertex_provider):
         provider, _ = vertex_provider
         provider._non_stream_completion = AsyncMock(return_value="ok")
@@ -101,7 +97,6 @@ class TestVertexProviderThinkingPolicy:
         }
         assert "reasoning_effort" not in payload
 
-    @pytest.mark.asyncio
     async def test_reasoning_history_enables_thinking_continuation(self, vertex_provider):
         provider, _ = vertex_provider
         provider._non_stream_completion = AsyncMock(return_value="ok")
@@ -136,7 +131,6 @@ class TestVertexProviderThinkingPolicy:
             "thought_signature"
         ] == "skip_thought_signature_validator"
 
-    @pytest.mark.asyncio
     async def test_cached_thought_signature_is_rehydrated_dynamically(self, vertex_provider):
         provider, cache = vertex_provider
         cache.retrieve.return_value = "cached-signature"

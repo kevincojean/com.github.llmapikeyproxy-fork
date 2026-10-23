@@ -88,6 +88,7 @@ class RequestContext:
     credential_secrets: Dict[str, str] = field(default_factory=dict)
     classifier: Optional[str] = None
     request_type: str = "chat"
+    model_alias: Optional[str] = None
 
 
 @dataclass

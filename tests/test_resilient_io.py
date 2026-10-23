@@ -1,8 +1,5 @@
-import os
 import json
-import shutil
 import logging
-from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open, ANY
 
 import pytest
@@ -145,6 +142,31 @@ def test_safe_write_json_buffer_on_failure(tmp_path, mock_logger):
             data,
             ANY,
             {"secure_permissions": True}
+        )
+
+
+@pytest.mark.parametrize(
+    "write_error",
+    [OSError("Mocked OSError"), PermissionError("Mocked PermissionError")],
+    ids=["oserror", "permissionerror"],
+)
+def test_safe_write_json_buffers_on_tempfile_creation_failure(
+    tmp_path, mock_logger, write_error
+):
+    """A failure creating the temp file still buffers the payload for retry."""
+    file_path = tmp_path / "test.json"
+    data = {"key": "value"}
+
+    mock_registry = MagicMock()
+
+    with patch("tempfile.mkstemp", side_effect=write_error), \
+         patch.object(BufferedWriteRegistry, "get_instance", return_value=mock_registry):
+
+        result = safe_write_json(file_path, data, mock_logger, buffer_on_failure=True)
+
+        assert result is False
+        mock_registry.register_pending.assert_called_once_with(
+            file_path, data, ANY, {"secure_permissions": False}
         )
 
 

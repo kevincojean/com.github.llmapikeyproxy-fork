@@ -54,7 +54,6 @@ async def _ok_inner_app(scope, receive, send):
     await send({"type": "http.response.body", "body": b"ok"})
 
 
-@pytest.mark.asyncio
 async def test_forwarded_for_in_log(captured_logs):
     """X-Forwarded-For value appears in the access log."""
     middleware = ForwardedForAccessLogMiddleware(_ok_inner_app)
@@ -81,7 +80,6 @@ async def test_forwarded_for_in_log(captured_logs):
     assert "200 OK" in msg
 
 
-@pytest.mark.asyncio
 async def test_no_forwarded_for_omits_suffix(captured_logs):
     """Without X-Forwarded-For, the forwarded_for suffix is omitted."""
     inner = AsyncMock()
@@ -103,7 +101,6 @@ async def test_no_forwarded_for_omits_suffix(captured_logs):
     assert "192.168.4.4:2671" in msg
 
 
-@pytest.mark.asyncio
 async def test_forwarded_for_chain_takes_first(captured_logs):
     """Only the first (original client) IP from a comma-separated chain is logged."""
     inner = AsyncMock()
@@ -127,7 +124,6 @@ async def test_forwarded_for_chain_takes_first(captured_logs):
     assert "10.0.0.1" not in msg
 
 
-@pytest.mark.asyncio
 async def test_query_string_in_path(captured_logs):
     """Query string is included in the logged request path."""
     inner = AsyncMock()
@@ -150,7 +146,6 @@ async def test_query_string_in_path(captured_logs):
     assert '"GET /v1/health/errors?limit=10 HTTP/1.1"' in msg
 
 
-@pytest.mark.asyncio
 async def test_websocket_not_logged(captured_logs):
     """WebSocket connections are passed through without logging."""
     inner = AsyncMock()
@@ -170,7 +165,6 @@ async def test_websocket_not_logged(captured_logs):
     assert len(captured_logs.records) == 0
 
 
-@pytest.mark.asyncio
 async def test_lifespan_not_logged(captured_logs):
     """Lifespan events are passed through without logging."""
     inner = AsyncMock()
@@ -190,7 +184,6 @@ async def test_lifespan_not_logged(captured_logs):
     assert len(captured_logs.records) == 0
 
 
-@pytest.mark.asyncio
 async def test_404_status_logged(captured_logs):
     """Non-200 status codes are logged with their phrase."""
     inner = AsyncMock()

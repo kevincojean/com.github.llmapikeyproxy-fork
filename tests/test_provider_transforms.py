@@ -21,16 +21,29 @@ NO network calls, NO API keys needed.
 """
 
 import copy
+import json
 
 import pytest
 
 from rotator_library.client.transforms import ProviderTransforms
+from rotator_library.model_definitions import ModelDefinitions
 
 
 @pytest.fixture
 def transforms():
     """ProviderTransforms instance with minimal (empty) plugin registry."""
     return ProviderTransforms(provider_plugins={}, provider_instances={})
+
+
+@pytest.fixture
+def gemini_models_env(monkeypatch):
+    def _set(config: dict):
+        monkeypatch.setenv("GEMINI_MODELS", json.dumps(config))
+        ModelDefinitions().reload_definitions()
+
+    yield _set
+    monkeypatch.delenv("GEMINI_MODELS", raising=False)
+    ModelDefinitions().reload_definitions()
 
 
 class TestGemmaSystemMessages:
@@ -299,3 +312,19 @@ class TestThinkingToolCallGuard:
             "openai", "openai/some-model", copy.deepcopy(kwargs)
         )
         assert "extra_body" not in result
+
+
+async def test_options_not_applied_for_provider_without_hook(
+    transforms, gemini_models_env
+):
+    gemini_models_env(
+        {"fast": {"id": "gemini-2.5-flash", "options": {"temperature": 0.3}}}
+    )
+    assert ModelDefinitions().get_model_options("gemini", "fast") == {"temperature": 0.3}
+    result = await transforms.apply(
+        "gemini",
+        "gemini/fast",
+        "cred",
+        {"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert "temperature" not in result

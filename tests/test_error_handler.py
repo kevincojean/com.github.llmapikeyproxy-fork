@@ -13,13 +13,10 @@ Error classification determines retry/rotation behavior:
 NO network calls, NO API keys needed.
 """
 
-import pytest
-from unittest.mock import MagicMock
 
 from rotator_library.error_handler import (
     classify_error,
     is_rate_limit_error,
-    ClassifiedError,
     _parse_duration_string,
     mask_credential,
 )

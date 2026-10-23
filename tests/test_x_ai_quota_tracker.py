@@ -45,9 +45,10 @@ def test_billing_val_unwraps_nested_val():
 
 
 def test_parse_period_end_ts_iso_z():
-    ts = _parse_period_end_ts("2026-07-01T00:00:00.000Z")
-    assert ts is not None
-    assert ts > time.time()
+    assert _parse_period_end_ts("2026-07-01T00:00:00.000Z") == 1782864000.0
+    assert _parse_period_end_ts("2026-07-01T00:00:00") == 1782864000.0
+    assert _parse_period_end_ts("not-a-date") is None
+    assert _parse_period_end_ts(None) is None
 
 
 def test_parse_billing_payload_float_dollars():

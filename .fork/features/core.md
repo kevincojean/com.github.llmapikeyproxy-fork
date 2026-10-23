@@ -229,3 +229,46 @@ Notes:
 - `RotatingClient.acompletion()` routing logic unchanged
 - `list_models()` and `get_model()` unchanged
 - Ref: b3nw/LLM-API-Key-Proxy#110
+
+## 2026-10-23 — Add `--env-file` / `PROXY_ENV_FILE` and drop the duplicate dotenv load
+
+Target: `fix(core): add --env-file flag and remove duplicate dotenv load`
+Files:
+- `src/proxy_app/main.py`
+- `README.md`
+
+Branch: `fix/opencode-modeloptions`
+
+Behavior:
+- New `--env-file PATH` CLI flag, plus `PROXY_ENV_FILE` as the env-var equivalent.
+  Precedence is `--env-file` > `$PROXY_ENV_FILE` > `./.env`.
+- An explicit path loads with `override=True` (the file wins over the process
+  environment) and fails fast via `parser.error` when the path is missing,
+  instead of silently falling back to `./.env`.
+- The default path keeps the old behaviour: `load_dotenv(ENV_FILE)` without
+  override, then any additional `*.env` files in the working directory with
+  `override=False`.
+- `needs_onboarding()` now reads the module-level `ENV_FILE` instead of
+  recomputing `get_data_file(".env")`, so the flag and the onboarding check
+  agree on which file is authoritative.
+- Non-interactive startup with a missing `.env` now prints an actionable error
+  and exits 1 instead of entering the interactive credential tool.
+- Removed the second `load_dotenv(ENV_FILE)` call that ran later in module
+  initialisation. The first call already loaded the same file and nothing
+  cleared or mutated the environment in between.
+
+Verification:
+- `uv run python3 -m py_compile src/proxy_app/main.py` — passed
+- `uv run ruff check src/proxy_app/main.py --select F401,F811,F821,E9` — passed
+- `uv run python src/proxy_app/main.py --env-file /tmp/definitely-missing.env`
+  → `error: --env-file not found: /tmp/definitely-missing.env` (fails fast)
+- `uv run python src/proxy_app/main.py --env-file <real .env> --port 18124`
+  → `📁 Loaded .env file: ...`, server ready, 27 providers discovered
+
+Notes:
+- Documented the full CLI flag table in `README.md` under Deployment →
+  Command-Line Arguments, including the `--env-file` precedence rules, because
+  `compliance-check.yml` requires new CLI arguments to be documented there.
+- The default-path branch still prints a count that includes the main `.env`
+  while the load loop skips it. Known cosmetic mismatch, left unchanged
+  deliberately (out of scope for this change).

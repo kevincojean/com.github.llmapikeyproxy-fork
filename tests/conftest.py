@@ -4,17 +4,14 @@
 """
 Shared test fixtures and utilities.
 
-All fixtures use synthetic credentials and mock HTTP — zero cost, zero network.
+Fixtures here use synthetic credentials and mock HTTP: no cost, no network.
+Tests marked `e2e` opt out and call real vendors with real credentials.
 """
 
-import asyncio
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -433,16 +430,3 @@ def openai_streaming_chunks():
             "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
         },
     ]
-
-
-# =============================================================================
-# Event Loop Configuration
-# =============================================================================
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()

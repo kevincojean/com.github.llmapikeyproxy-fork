@@ -18,11 +18,8 @@ NO API keys needed.
 import json
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 import rotator_library.providers.anthropic_provider as ap
 from rotator_library.providers.anthropic_provider import (
-    OAUTH_MODELS,
     _fetch_anthropic_models_from_models_dev,
     _get_dynamic_models,
 )

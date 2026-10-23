@@ -136,19 +136,9 @@ cache/antigravity/thought_signatures.json
 
 /usage/
 
-# Keep classifier-scoped routing regression tests reviewable even when a local
-# exclude file ignores the tests directory, without surfacing unrelated tests.
+# Test files are tracked by default so a new test is picked up without
+# editing this file. Byte-code and pytest caches stay ignored.
 !tests/
-tests/*
-!tests/test_classifier_scoped_routing.py
-!tests/test_session_tracking.py
-!tests/test_selection_engine.py
-!tests/test_xai_oauth_flow.py
-!tests/test_usage_reconciliation.py
-!tests/test_access_log_middleware.py
-!tests/test_gemini_cli_models.py
-!tests/test_suppress_litellm_warnings.py
-!tests/test_opencode_go_session_header.py
 docs/ignored/
 .env
 .agent/
@@ -162,8 +152,3 @@ webui/dist/
 
 # Command Code session files
 command_code_cookies.json
-
-!tests/test_responses_compat.py
-!tests/test_fair_cycle.py
-!tests/test_anthropic_models_dev.py
-!tests/test_anthropic_oauth_headers.py

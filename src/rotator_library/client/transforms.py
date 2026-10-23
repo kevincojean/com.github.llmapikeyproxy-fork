@@ -26,8 +26,21 @@ Provider-specific (keyed by provider name or model substring):
 Transforms are applied in a defined order with logging of modifications.
 """
 
+import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional
+
+from ..providers.utilities.opencode_go_thinking import (
+    EXTRA_BODY,
+    REASONING_EFFORT,
+    THINKING,
+    TYPE,
+    TOGGLE_CONTROLS,
+    ThinkingControl,
+    ThinkingIntent,
+    capability_from_plugin,
+    normalize_thinking,
+)
 
 lib_logger = logging.getLogger("rotator_library")
 
@@ -40,7 +53,7 @@ class ProviderTransforms:
     0. Global pre-transforms (thinking-mode guard, etc.)
     1. Built-in keyed transforms (gemma-3, mistral, etc.)
     2. Provider hook transforms (from provider plugins)
-    3. Model-specific options from provider plugins
+    3. Model-specific options and thinking normalization from provider plugins
     4. LiteLLM conversion
     """
 
@@ -94,6 +107,32 @@ class ProviderTransforms:
                 return None
         return self._plugin_instances[provider]
 
+    def _get_model_options(
+        self,
+        plugin: Optional[Any],
+        provider: str,
+        model: str,
+        model_alias: Optional[str],
+    ) -> Dict[str, Any]:
+        names = [name for name in (model_alias, model) if name]
+        if plugin and hasattr(plugin, "get_model_options"):
+            for name in names:
+                options = plugin.get_model_options(name)
+                if options:
+                    return copy.deepcopy(options)
+        return {}
+
+    def _apply_thinking_normalizer(
+        self,
+        kwargs: Dict[str, Any],
+        model: str,
+        plugin: Optional[Any],
+    ) -> Optional[Dict[str, Any]]:
+        capability = capability_from_plugin(plugin, model)
+        if capability is None or capability.control is ThinkingControl.UNKNOWN:
+            return None
+        return normalize_thinking(kwargs, model, capability)
+
     async def apply(
         self,
         provider: str,
@@ -102,6 +141,7 @@ class ProviderTransforms:
         kwargs: Dict[str, Any],
         provider_config_override: Optional[Dict[str, Any]] = None,
         request_type: str = "chat",
+        model_alias: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Apply all applicable transforms to request kwargs.
@@ -143,15 +183,19 @@ class ProviderTransforms:
                 lib_logger.debug(f"Provider transform_request hook failed: {e}")
 
         # 3. Apply model-specific options from provider
-        if plugin and hasattr(plugin, "get_model_options"):
-            model_options = plugin.get_model_options(model)
-            if model_options:
-                for key, value in model_options.items():
-                    if key == "reasoning_effort":
-                        kwargs["reasoning_effort"] = value
-                    elif key not in kwargs:
-                        kwargs[key] = value
-                modifications.append(f"applied model options for {model}")
+        model_options = self._get_model_options(plugin, provider, model, model_alias)
+        if model_options:
+            for key, value in model_options.items():
+                if key == REASONING_EFFORT:
+                    kwargs[REASONING_EFFORT] = value
+                elif key not in kwargs:
+                    kwargs[key] = value
+            modifications.append(f"applied model options for {model}")
+
+        thinking_result = self._apply_thinking_normalizer(kwargs, model, plugin)
+        if thinking_result is not None:
+            kwargs = thinking_result
+            modifications.append(f"normalized thinking for {model}")
 
         # 4. Apply LiteLLM conversion if config available
         if self._config and hasattr(self._config, "convert_for_litellm"):
@@ -251,13 +295,25 @@ class ProviderTransforms:
             if msg.get("role") != "assistant":
                 continue
             if msg.get("tool_calls") and not msg.get("reasoning_content"):
-                extra_body = kwargs.get("extra_body")
+                capability = capability_from_plugin(
+                    self._get_plugin_instance(provider), model
+                )
+                if capability is not None and (
+                    capability.control is ThinkingControl.UNKNOWN
+                    or capability.control not in TOGGLE_CONTROLS
+                ):
+                    lib_logger.debug(
+                        f"{provider}/{model} cannot express a thinking toggle; "
+                        f"skipping tool-call guard injection"
+                    )
+                    return None
+                extra_body = kwargs.get(EXTRA_BODY)
                 if not isinstance(extra_body, dict):
                     extra_body = {}
-                extra_body = {**extra_body, "thinking": {"type": "disabled"}}
-                kwargs["extra_body"] = extra_body
+                extra_body = {**extra_body, THINKING: {TYPE: ThinkingIntent.DISABLED.value}}
+                kwargs[EXTRA_BODY] = extra_body
                 return (
-                    "disabled thinking — assistant tool-call turn "
+                    "disabled thinking - assistant tool-call turn "
                     "missing reasoning_content"
                 )
 

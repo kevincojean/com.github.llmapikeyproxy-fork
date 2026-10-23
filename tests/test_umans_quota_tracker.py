@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -232,7 +231,8 @@ def test_store_baselines_to_usage_manager():
 
         req_call = next(c for c in calls if c.kwargs.get("quota_group") == "5h-requests")
         assert req_call.kwargs["model"] == "umans/_requests_5h"
-        assert req_call.kwargs["quota_max_requests"] == 200
+        assert snapshot.requests_hard_cap == 400
+        assert req_call.kwargs["quota_max_requests"] == snapshot.requests_hard_cap
         assert req_call.kwargs["quota_used"] == 12
 
         conc_call = next(

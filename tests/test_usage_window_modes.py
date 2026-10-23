@@ -17,7 +17,6 @@ NO network calls, NO API keys needed.
 
 import time
 
-import pytest
 
 from rotator_library.usage.config import WindowDefinition
 from rotator_library.usage.types import ResetMode

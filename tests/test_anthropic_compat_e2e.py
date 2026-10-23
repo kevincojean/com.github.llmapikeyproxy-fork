@@ -21,7 +21,6 @@ NO network calls, NO API keys needed.
 
 import json
 
-import pytest
 
 from rotator_library.anthropic_compat.translator import (
     translate_anthropic_request,
@@ -141,7 +140,6 @@ class TestAnthropicE2EMultiTurn:
 class TestAnthropicE2EStreaming:
     """E2E test: streaming request produces valid Anthropic events."""
 
-    @pytest.mark.asyncio
     async def test_streaming_round_trip(self, openai_streaming_chunks):
         """Streaming: OpenAI SSE chunks → Anthropic SSE events."""
         async def mock_stream():

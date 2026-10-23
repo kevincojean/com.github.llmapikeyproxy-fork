@@ -12,7 +12,6 @@ client requests.
 NO network calls, NO API keys needed.
 """
 
-import pytest
 
 from rotator_library.anthropic_compat.translator import (
     translate_anthropic_request,

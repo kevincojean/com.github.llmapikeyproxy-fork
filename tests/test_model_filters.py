@@ -15,7 +15,6 @@ Logic order:
 NO network calls, NO API keys needed.
 """
 
-import pytest
 
 from rotator_library.client.filters import CredentialFilter
 

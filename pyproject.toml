@@ -31,14 +31,16 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 dev = [
     "ruff>=0.15.14",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-mock==3.17.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "unit: Pure logic tests, no I/O, no network (<1s each)",
-    "integration: Component interaction with mocked HTTP",
+    "e2e: Hits a real vendor API with real credentials from a .env file; costs money and needs network",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:litellm",

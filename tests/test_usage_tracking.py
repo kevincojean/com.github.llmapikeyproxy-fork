@@ -14,9 +14,7 @@ NO network calls, NO API keys needed.
 """
 
 import time
-from dataclasses import dataclass
 
-import pytest
 
 from rotator_library.usage.types import (
     WindowStats,

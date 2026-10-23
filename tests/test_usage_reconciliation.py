@@ -75,7 +75,6 @@ def _make_usage_state(stable_id: str, accessor: str, provider: str = "codex") ->
 class TestUsageReconciliation:
     """Test that stale credentials are pruned from persisted usage state."""
 
-    @pytest.mark.asyncio
     async def test_missing_file_accessor_pruned(self, tmp_path, oauth_dir):
         """Persisted usage referencing a deleted OAuth file is pruned on startup."""
         existing = _make_oauth_file(oauth_dir, "codex_oauth_1.json", "user1@test.com")
@@ -103,7 +102,6 @@ class TestUsageReconciliation:
         assert "user1@test.com" in manager._states
         mock_storage.mark_dirty.assert_called()
 
-    @pytest.mark.asyncio
     async def test_accessor_index_rebuilt_from_current(self, tmp_path, oauth_dir):
         """accessor_index is rebuilt from current credentials, not stale persisted data."""
         existing = _make_oauth_file(oauth_dir, "codex_oauth_1.json", "user1@test.com")
@@ -129,7 +127,6 @@ class TestUsageReconciliation:
         assert len(manager._active_stable_ids) == 1
         assert "gone_user@test.com" not in manager._states
 
-    @pytest.mark.asyncio
     async def test_stable_id_deduplication(self, tmp_path, oauth_dir):
         """When two stable IDs point to same accessor, only the correct one survives."""
         existing = _make_oauth_file(oauth_dir, "codex_oauth_1.json", "user1@test.com")
@@ -158,7 +155,6 @@ class TestUsageReconciliation:
         assert len(accessor_entries) == 1
         assert "user1@test.com" in manager._states
 
-    @pytest.mark.asyncio
     async def test_remove_credential_at_runtime(self, tmp_path, oauth_dir):
         """remove_credential() removes from both active set and states."""
         existing = _make_oauth_file(oauth_dir, "codex_oauth_1.json", "user1@test.com")

@@ -14,7 +14,6 @@ NO network calls, NO API keys needed.
 
 import json
 
-import pytest
 
 from rotator_library.anthropic_compat.streaming import anthropic_streaming_wrapper
 
@@ -51,7 +50,6 @@ def _parse_event(event_str):
 class TestAnthropicStreamingBasic:
     """Basic streaming format conversion tests."""
 
-    @pytest.mark.asyncio
     async def test_simple_text_stream(self, openai_streaming_chunks):
         """Simple text streaming produces correct Anthropic events."""
         stream = _chunks_to_stream(openai_streaming_chunks)
@@ -75,7 +73,6 @@ class TestAnthropicStreamingBasic:
         assert "content_block_delta" in event_types, "Missing content_block_delta"
         assert "content_block_stop" in event_types, "Missing content_block_stop"
 
-    @pytest.mark.asyncio
     async def test_message_start_has_model(self, openai_streaming_chunks):
         """message_start event includes the model name."""
         stream = _chunks_to_stream(openai_streaming_chunks)
@@ -96,7 +93,6 @@ class TestAnthropicStreamingBasic:
                         break
                 break
 
-    @pytest.mark.asyncio
     async def test_text_delta_accumulation(self):
         """Text deltas are correctly accumulated in content_block_delta events."""
         chunks = [
@@ -166,7 +162,6 @@ class TestAnthropicStreamingBasic:
 class TestAnthropicStreamingToolUse:
     """Streaming tests for tool use scenarios."""
 
-    @pytest.mark.asyncio
     async def test_tool_call_streaming(self):
         """Tool calls in streaming are accumulated and emitted correctly."""
         chunks = [
@@ -257,7 +252,6 @@ class TestAnthropicStreamingToolUse:
 class TestAnthropicStreamingEdgeCases:
     """Edge cases in streaming conversion."""
 
-    @pytest.mark.asyncio
     async def test_empty_stream(self):
         """Stream with just [DONE] produces valid message_start/stop."""
         async def empty_stream():
@@ -270,7 +264,6 @@ class TestAnthropicStreamingEdgeCases:
         # Should not crash — might produce minimal message structure
         assert isinstance(events, list)
 
-    @pytest.mark.asyncio
     async def test_malformed_json_chunk(self):
         """Malformed JSON chunks don't crash the stream."""
         async def bad_stream():
@@ -284,7 +277,6 @@ class TestAnthropicStreamingEdgeCases:
         # Should handle gracefully (skip or log, not crash)
         assert isinstance(events, list)
 
-    @pytest.mark.asyncio
     async def test_reasoning_content_in_stream(self):
         """reasoning_content in streaming becomes thinking_delta events."""
         chunks = [
