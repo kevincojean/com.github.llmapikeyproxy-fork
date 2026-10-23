@@ -62,6 +62,11 @@ from ..core.constants import (
     ENV_PREFIX_MAX_RETRIES,
 )
 from ..request_sanitizer import sanitize_request_payload
+from ..providers.utilities.opencode_go_thinking import (
+    TOGGLE_CONTROLS,
+    ThinkingControl,
+    capability_from_plugin,
+)
 from ..transaction_logger import TransactionLogger
 from ..failure_logger import log_failure
 from ..core.utils import normalize_usage_for_response
@@ -526,10 +531,15 @@ class RequestExecutor:
             context.kwargs.copy(),
             provider_config_override=context.provider_config,
             request_type=getattr(context, "request_type", "chat"),
+            model_alias=getattr(context, "model_alias", None),
         )
 
         # Sanitize request payload
-        kwargs = sanitize_request_payload(kwargs, model)
+        kwargs = sanitize_request_payload(
+            kwargs,
+            model,
+            accepts_thinking=self._accepts_thinking(provider, model),
+        )
 
         # Apply provider-specific LiteLLM params
         self._apply_litellm_provider_params(provider, kwargs)
@@ -1513,6 +1523,12 @@ class RequestExecutor:
             error_data = {"error": {"message": str(e), "type": "proxy_internal_error"}}
             yield f"data: {json.dumps(error_data)}\n\n"
             yield "data: [DONE]\n\n"
+
+    def _accepts_thinking(self, provider: str, model: str) -> Optional[bool]:
+        capability = capability_from_plugin(self._get_plugin_instance(provider), model)
+        if capability is None or capability.control is ThinkingControl.UNKNOWN:
+            return None
+        return capability.control in TOGGLE_CONTROLS
 
     def _apply_litellm_provider_params(
         self, provider: str, kwargs: Dict[str, Any]

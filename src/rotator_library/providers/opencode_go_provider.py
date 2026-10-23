@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from .provider_interface import ProviderInterface
 from .utilities.opencode_quota_tracker import OpencodeQuotaTracker
+from .utilities.opencode_go_thinking import ThinkingCapability, capability_for
 from ..model_definitions import ModelDefinitions
 from ..error_handler import mask_credential
 
@@ -43,6 +44,7 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         "top_p",
         "max_tokens",
         "max_completion_tokens",
+        "reasoning_effort",
         "stream",
         "stream_options",
         "tools",
@@ -369,6 +371,14 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
         
         kwargs["tools"] = new_tools
 
+    def get_thinking_capability(self, model: str) -> ThinkingCapability:
+        return capability_for(model)
+
+    def get_model_options(self, model_name: str) -> Dict[str, Any]:
+        if model_name.startswith("opencode_go/"):
+            model_name = model_name[len("opencode_go/"):]
+        return self.model_definitions.get_model_options("opencode_go", model_name)
+
     def _ensure_deepseek_v4_tool_choice(self, kwargs: Dict[str, Any], model: str) -> None:
         """
         Remove tool_choice for DeepSeek V4 reasoner models.
@@ -386,34 +396,11 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
                 f"(not supported by reasoner models)"
             )
 
-    def _ensure_deepseek_v4_reasoning(self, kwargs: Dict[str, Any], model: str) -> None:
-        """
-        Enable thinking mode and pad reasoning_content for DeepSeek V4.
-
-        DeepSeek V4 models default to thinking mode ON. The API requires
-        ``reasoning_content`` on assistant messages that contain tool_calls
-        (the global ``_guard_thinking_tool_calls`` transform handles the
-        unrecoverable case where the client dropped reasoning from a
-        tool-call turn by setting ``thinking: disabled`` before we get here).
-
-        This method:
-        1. Enables thinking if not already configured (respects the guard).
-        2. Pads non-tool-call assistant messages missing reasoning_content
-           with ``""`` — the API ignores this field on non-tool-call turns.
-
-        References:
-        - https://api-docs.deepseek.com/guides/thinking_mode
-        - OpenCode issue #24722 (reasoning_content mandatory for tool-call turns)
-        """
+    def _pad_deepseek_v4_reasoning_content(
+        self, kwargs: Dict[str, Any], model: str
+    ) -> None:
         if not self._is_deepseek_v4(model):
             return
-
-        extra_body = kwargs.get("extra_body")
-        if not isinstance(extra_body, dict):
-            extra_body = {}
-        if "thinking" not in extra_body:
-            extra_body = {**extra_body, "thinking": {"type": "enabled"}}
-            kwargs["extra_body"] = extra_body
 
         messages = kwargs.get("messages")
         if not messages:
@@ -435,27 +422,9 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
                 f"({sum(1 for m in new_messages if m.get('role') == 'assistant')} assistant messages)"
             )
 
-    def _ensure_moonshot_reasoning(self, kwargs: Dict[str, Any], model: str) -> None:
-        """
-        Moonshot/Kimi models with thinking mode enabled require a non-empty
-        ``reasoning_content`` on every assistant message.  Standard OpenAI
-        clients omit this field on historical turns, causing a 400 error:
-
-            "thinking is enabled but reasoning_content is missing
-             in assistant tool call message at index N"
-
-        The Kimi API treats empty-string ``""`` as absent, so we pad with a
-        single space ``" "``, matching LiteLLM's MoonshotChatConfig approach.
-        """
+    def _pad_moonshot_reasoning_content(self, kwargs: Dict[str, Any], model: str) -> None:
         if not self._is_moonshot(model):
             return
-
-        extra_body = kwargs.get("extra_body")
-        if not isinstance(extra_body, dict):
-            extra_body = {}
-        if "thinking" not in extra_body:
-            extra_body = {**extra_body, "thinking": {"type": "enabled"}}
-            kwargs["extra_body"] = extra_body
 
         messages = kwargs.get("messages")
         if not messages:
@@ -500,10 +469,10 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
 
         # Apply model-specific fixes
         self._ensure_deepseek_v4_tool_choice(kwargs, model)
-        self._ensure_deepseek_v4_reasoning(kwargs, model)
+        self._pad_deepseek_v4_reasoning_content(kwargs, model)
         if self._is_moonshot(model):
             self._apply_moonshot_fixes(kwargs)
-            self._ensure_moonshot_reasoning(kwargs, model)
+            self._pad_moonshot_reasoning_content(kwargs, model)
 
         # Ensure only one of max_tokens or max_completion_tokens is sent.
         # Some OpenCode models (like GLM-5.1) reject requests containing both.
