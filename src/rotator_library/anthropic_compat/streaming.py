@@ -11,7 +11,7 @@ OpenAI SSE (Server-Sent Events) format to Anthropic's streaming format.
 import json
 import logging
 import uuid
-from typing import AsyncGenerator, Callable, Optional, Awaitable, Any, TYPE_CHECKING
+from typing import AsyncGenerator, Callable, Optional, Awaitable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..transaction_logger import TransactionLogger
@@ -215,6 +215,29 @@ async def anthropic_streaming_wrapper(
             except json.JSONDecodeError:
                 continue
 
+            error_info = chunk.get("error")
+            if isinstance(error_info, dict):
+                error_code = error_info.get("code") or ""
+                anthropic_type = (
+                    "invalid_request_error"
+                    if error_code
+                    in ("content_policy_violation", "invalid_request", "context_window_exceeded")
+                    else "api_error"
+                )
+                if error_code:
+                    message = error_info.get("message") or "The proxy could not complete this response."
+                else:
+                    message = "The proxy could not complete this response."
+                error_event = {
+                    "type": "error",
+                    "error": {
+                        "type": anthropic_type,
+                        "message": message,
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+                return
+
             # Extract usage if present
             # Note: Google's promptTokenCount INCLUDES cached tokens, but Anthropic's
             # input_tokens EXCLUDES cached tokens. We extract cached tokens and subtract.
@@ -408,7 +431,7 @@ async def anthropic_streaming_wrapper(
             yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
         # Send the error as a text content block so it's visible to the user
-        error_message = f"Error: {str(e)}"
+        error_message = "The proxy could not complete this response."
         error_block_start = {
             "type": "content_block_start",
             "index": current_block_index,
@@ -441,6 +464,9 @@ async def anthropic_streaming_wrapper(
         # Also send the formal error event for clients that handle it
         error_event = {
             "type": "error",
-            "error": {"type": "api_error", "message": str(e)},
+            "error": {
+                "type": "api_error",
+                "message": "The proxy could not complete this response.",
+            },
         }
         yield f"event: error\ndata: {json.dumps(error_event)}\n\n"

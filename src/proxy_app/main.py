@@ -266,6 +266,8 @@ class EnrichedModelList(BaseModel):
 
 
 # --- Anthropic API Models (imported from library) ---
+from rotator_library.core.errors import ProviderErrorType
+from rotator_library.error_handler import build_terminal_error_response
 from rotator_library.anthropic_compat import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -800,6 +802,39 @@ async def verify_anthropic_api_key(
     raise HTTPException(status_code=401, detail="Invalid or missing API Key")
 
 
+def _openai_error_status(error: Exception) -> tuple[int, str]:
+    if isinstance(error, litellm.AuthenticationError):
+        return 401, "authentication_error"
+    if isinstance(error, litellm.RateLimitError):
+        return 429, "rate_limit_error"
+    if isinstance(error, (litellm.ServiceUnavailableError, litellm.APIConnectionError)):
+        return 503, "service_unavailable"
+    if isinstance(
+        error, (litellm.InvalidRequestError, litellm.ContextWindowExceededError)
+    ):
+        return 400, "invalid_request_error"
+    if isinstance(error, litellm.Timeout):
+        return 504, "timeout"
+    return 502, "api_error"
+
+
+def _sanitized_openai_error(error: Exception, status_code: int) -> dict:
+    if status_code == 400:
+        model = getattr(error, "model", None)
+        provider = getattr(error, "llm_provider", None)
+        return build_terminal_error_response(
+            ProviderErrorType.INVALID_REQUEST,
+            model if isinstance(model, str) and model else "the requested model",
+            provider if isinstance(provider, str) and provider else "the upstream provider",
+        )
+    return {
+        "error": {
+            "message": "The upstream provider returned an error.",
+            "type": "api_error",
+        }
+    }
+
+
 async def streaming_response_wrapper(
     request: Request,
     request_data: dict,
@@ -834,7 +869,7 @@ async def streaming_response_wrapper(
         # Yield a final error message to the client to ensure they are not left hanging.
         error_payload = {
             "error": {
-                "message": f"An unexpected error occurred during the stream: {str(e)}",
+                "message": "An unexpected error occurred during the stream.",
                 "type": "proxy_internal_error",
                 "code": 500,
             }
@@ -1144,22 +1179,15 @@ async def chat_completions(
     except ProxyExhaustionError as e:
         # Executor exhausted all credentials — return structured error with correct HTTP status.
         return JSONResponse(status_code=e.http_status, content=e.error_response)
-    except (
-        litellm.InvalidRequestError,
-        ValueError,
-        litellm.ContextWindowExceededError,
-    ) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid Request: {str(e)}")
-    except litellm.AuthenticationError as e:
-        raise HTTPException(status_code=401, detail=f"Authentication Error: {str(e)}")
-    except litellm.RateLimitError as e:
-        raise HTTPException(status_code=429, detail=f"Rate Limit Exceeded: {str(e)}")
-    except (litellm.ServiceUnavailableError, litellm.APIConnectionError) as e:
-        raise HTTPException(status_code=503, detail=f"Service Unavailable: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_sanitized_openai_error(e, 400))
     except litellm.Timeout as e:
-        raise HTTPException(status_code=504, detail=f"Gateway Timeout: {str(e)}")
-    except (litellm.InternalServerError, litellm.OpenAIError) as e:
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
+        raise HTTPException(status_code=504, detail=_sanitized_openai_error(e, 504))
+    except litellm.OpenAIError as e:
+        status_code, error_type = _openai_error_status(e)
+        raise HTTPException(
+            status_code=status_code, detail=_sanitized_openai_error(e, status_code)
+        )
     except Exception as e:
         logging.error(f"Request failed after all retries: {e}")
         # Optionally log the failed request
@@ -1294,22 +1322,15 @@ async def responses_api(
 
     except ProxyExhaustionError as e:
         return JSONResponse(status_code=e.http_status, content=e.error_response)
-    except (
-        litellm.InvalidRequestError,
-        ValueError,
-        litellm.ContextWindowExceededError,
-    ) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid Request: {str(e)}")
-    except litellm.AuthenticationError as e:
-        raise HTTPException(status_code=401, detail=f"Authentication Error: {str(e)}")
-    except litellm.RateLimitError as e:
-        raise HTTPException(status_code=429, detail=f"Rate Limit Exceeded: {str(e)}")
-    except (litellm.ServiceUnavailableError, litellm.APIConnectionError) as e:
-        raise HTTPException(status_code=503, detail=f"Service Unavailable: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_sanitized_openai_error(e, 400))
     except litellm.Timeout as e:
-        raise HTTPException(status_code=504, detail=f"Gateway Timeout: {str(e)}")
-    except (litellm.InternalServerError, litellm.OpenAIError) as e:
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
+        raise HTTPException(status_code=504, detail=_sanitized_openai_error(e, 504))
+    except litellm.OpenAIError as e:
+        status_code, error_type = _openai_error_status(e)
+        raise HTTPException(
+            status_code=status_code, detail=_sanitized_openai_error(e, status_code)
+        )
     except Exception as e:
         logging.error(f"Responses API request failed: {e}")
         if raw_logger:
@@ -1396,11 +1417,20 @@ async def anthropic_messages(
             return JSONResponse(content=result)
 
     except ProxyExhaustionError as e:
-        # Wrap in Anthropic error envelope with correct HTTP status.
+        anthropic_type = (
+            "invalid_request_error"
+            if e.dominant_code
+            in (
+                "content_policy_violation",
+                "invalid_request",
+                "context_window_exceeded",
+            )
+            else "api_error"
+        )
         anthropic_error_response = {
             "type": "error",
             "error": {
-                "type": "api_error",
+                "type": anthropic_type,
                 "message": e.error_response.get("error", {}).get("message", str(e)),
             },
         }
@@ -1572,22 +1602,15 @@ async def embeddings(
         raise e
     except ProxyExhaustionError as e:
         return JSONResponse(status_code=e.http_status, content=e.error_response)
-    except (
-        litellm.InvalidRequestError,
-        ValueError,
-        litellm.ContextWindowExceededError,
-    ) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid Request: {str(e)}")
-    except litellm.AuthenticationError as e:
-        raise HTTPException(status_code=401, detail=f"Authentication Error: {str(e)}")
-    except litellm.RateLimitError as e:
-        raise HTTPException(status_code=429, detail=f"Rate Limit Exceeded: {str(e)}")
-    except (litellm.ServiceUnavailableError, litellm.APIConnectionError) as e:
-        raise HTTPException(status_code=503, detail=f"Service Unavailable: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_sanitized_openai_error(e, 400))
     except litellm.Timeout as e:
-        raise HTTPException(status_code=504, detail=f"Gateway Timeout: {str(e)}")
-    except (litellm.InternalServerError, litellm.OpenAIError) as e:
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
+        raise HTTPException(status_code=504, detail=_sanitized_openai_error(e, 504))
+    except litellm.OpenAIError as e:
+        status_code, error_type = _openai_error_status(e)
+        raise HTTPException(
+            status_code=status_code, detail=_sanitized_openai_error(e, status_code)
+        )
     except Exception as e:
         logging.error(f"Embedding request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

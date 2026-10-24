@@ -589,6 +589,7 @@ class RotatingClient:
     _NON_FALLBACK_ERROR_CODES = frozenset({
         "context_window_exceeded",
         "invalid_request",
+        "content_policy_violation",
         "authentication",
         "forbidden",
     })
@@ -673,10 +674,20 @@ class RotatingClient:
             result = await self._executor.execute(context)
         except ProxyExhaustionError as primary_error:
             result = None
-            return await self._attempt_fallback(
-                primary_error.dominant_code, model, provider,
-                request, pre_request_callback, kwargs,
-            )
+            if primary_error.dominant_code in self._NON_FALLBACK_ERROR_CODES:
+                raise primary_error
+            try:
+                return await self._attempt_fallback(
+                    primary_error.dominant_code, model, provider,
+                    request, pre_request_callback, kwargs,
+                )
+            except ProxyExhaustionError as fallback_error:
+                # A fallback refusal must never replace the real terminal error:
+                # the primary response already carries the clean message the
+                # client needs, and fallback_type only says why it was skipped.
+                if getattr(fallback_error, "fallback_reason", None) is not None:
+                    raise primary_error
+                raise
 
         if not context.streaming:
             return result
@@ -709,28 +720,34 @@ class RotatingClient:
         from ..core.errors import ProxyExhaustionError
 
         if dominant_code in self._NON_FALLBACK_ERROR_CODES:
-            raise ProxyExhaustionError(
+            refused = ProxyExhaustionError(
                 {"error": {"message": "Non-fallback error", "type": dominant_code}},
                 dominant_code=dominant_code,
             )
+            refused.fallback_reason = "non_fallback_error"
+            raise refused
 
         model_name = model.split("/", 1)[1] if "/" in model else model
 
         fallback_targets = self._fallback_registry.resolve(model_name)
         if not fallback_targets:
-            raise ProxyExhaustionError(
+            refused = ProxyExhaustionError(
                 {"error": {"message": "No fallback configured", "type": dominant_code}},
                 dominant_code=dominant_code,
             )
+            refused.fallback_reason = "no_fallback_configured"
+            raise refused
 
         fallback_targets = [
             t for t in fallback_targets if t.provider != provider
         ]
         if not fallback_targets:
-            raise ProxyExhaustionError(
+            refused = ProxyExhaustionError(
                 {"error": {"message": "All fallback targets same provider", "type": dominant_code}},
                 dominant_code=dominant_code,
             )
+            refused.fallback_reason = "same_provider_only"
+            raise refused
 
         lib_logger.info(
             f"Primary provider '{provider}' exhausted for '{model_name}' "

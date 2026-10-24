@@ -81,6 +81,8 @@ if TYPE_CHECKING:
     from ..error_handler import ClassifiedError
     from ..usage import UsageManager
 
+from ..error_handler import build_terminal_error_response
+
 lib_logger = logging.getLogger("rotator_library")
 
 
@@ -883,17 +885,19 @@ class RequestExecutor:
 
                             except Exception as e:
                                 last_exception = e
-                                action = await self._handle_error_with_context(
-                                    e,
-                                    cred_context,
-                                    model,
-                                    provider,
-                                    attempt,
-                                    max_retries,
-                                    error_accumulator,
-                                    retry_state,
-                                    request_headers,
-                                    deadline=deadline,
+                                action, action_classified = (
+                                    await self._handle_error_with_context(
+                                        e,
+                                        cred_context,
+                                        model,
+                                        provider,
+                                        attempt,
+                                        max_retries,
+                                        error_accumulator,
+                                        retry_state,
+                                        request_headers,
+                                        deadline=deadline,
+                                    )
                                 )
 
                                 if action == ErrorAction.RETRY_SAME:
@@ -903,7 +907,7 @@ class RequestExecutor:
                                 else:  # FAIL
                                     # Raise as TerminalRequestError so it escapes
                                     # the `except Exception: pass` cleanup block below.
-                                    raise TerminalRequestError(e)
+                                    raise TerminalRequestError(e, action_classified)
 
                     except PreRequestCallbackError:
                         raise
@@ -918,21 +922,15 @@ class RequestExecutor:
             except NoAvailableKeysError:
                 break
             except TerminalRequestError as terminal:
-                # Non-rotatable error (e.g. 404 model not found) — stop immediately.
-                # Record in accumulator for a clean error response, then bail out.
                 original = terminal.original
-                classified = classify_error(original, provider)
+                classified = terminal.classified or classify_error(original, provider)
                 lib_logger.error(
                     f"Non-rotatable error for {model} ({classified.error_type}, "
                     f"HTTP {classified.status_code}): {str(original)[:200]} — skipping rotation"
                 )
-                # Build an immediate error response and raise with proper HTTP mapping
-                from ..error_handler import RequestErrorAccumulator as _RqErrAcc
-                acc = _RqErrAcc()
-                acc.model = model
-                acc.provider = provider
-                acc.record_error("(terminal)", classified, str(original)[:200])
-                error_response = acc.build_client_error_response()
+                error_response = build_terminal_error_response(
+                    classified.error_type, model, provider
+                )
                 raise ProxyExhaustionError(
                     error_response,
                     dominant_code=classified.error_type,
@@ -1198,7 +1196,7 @@ class RequestExecutor:
 
                                     if not should_rotate_on_error(classified):
                                         cred_context.mark_failure(classified)
-                                        raise TerminalRequestError(e)
+                                        raise TerminalRequestError(e, classified)
 
                                     if not can_retry_stream_after_error(
                                         last_streamed_chunk,
@@ -1293,7 +1291,7 @@ class RequestExecutor:
 
                                     if not should_rotate_on_error(classified):
                                         cred_context.mark_failure(classified)
-                                        raise TerminalRequestError(e)
+                                        raise TerminalRequestError(e, classified)
 
                                     # Check for small cooldown - retry same key instead of rotating
                                     small_cooldown_threshold = int(
@@ -1430,7 +1428,7 @@ class RequestExecutor:
                                         cred_context.mark_failure(classified)
                                         # Raise as TerminalRequestError so it escapes
                                         # the `except Exception: pass` cleanup block.
-                                        raise TerminalRequestError(e)
+                                        raise TerminalRequestError(e, classified)
 
                                     small_cooldown_threshold = int(
                                         os.environ.get(
@@ -1497,30 +1495,33 @@ class RequestExecutor:
             yield "data: [DONE]\n\n"
 
         except TerminalRequestError as terminal:
-            # Non-rotatable error (e.g. 404 model not found) — stop immediately.
             original = terminal.original
-            classified = classify_error(original, provider)
+            classified = terminal.classified or classify_error(original, provider)
             lib_logger.error(
                 f"Non-rotatable error for {model} ({classified.error_type}, "
                 f"HTTP {classified.status_code}): {str(original)[:200]} — skipping rotation"
             )
-            error_data = {
-                "error": {
-                    "message": (
-                        f"Model not available: {str(original)[:300]}"
-                        if classified.status_code == 404
-                        else f"Request error ({classified.error_type}): {str(original)[:300]}"
-                    ),
-                    "type": "model_not_available" if classified.status_code == 404 else classified.error_type,
-                    "details": {"model": model, "status_code": classified.status_code},
-                }
-            }
+            if classified.status_code == 404:
+                error_data = build_terminal_error_response(
+                    classified.error_type, model, provider
+                )
+                error_data["error"]["type"] = "model_not_available"
+                error_data["error"]["message"] = f"Model not available: {model}"
+            else:
+                error_data = build_terminal_error_response(
+                    classified.error_type, model, provider
+                )
             yield f"data: {json.dumps(error_data)}\n\n"
             yield "data: [DONE]\n\n"
 
         except Exception as e:
             lib_logger.error(f"Unhandled exception in streaming: {e}", exc_info=True)
-            error_data = {"error": {"message": str(e), "type": "proxy_internal_error"}}
+            error_data = {
+                "error": {
+                    "message": "The proxy could not complete the stream.",
+                    "type": "proxy_internal_error",
+                }
+            }
             yield f"data: {json.dumps(error_data)}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -1693,7 +1694,8 @@ class RequestExecutor:
             deadline: Request deadline
 
         Returns:
-            ErrorAction indicating what to do next
+            Tuple of (ErrorAction, ClassifiedError) so the caller can carry the
+            classification into a TerminalRequestError without re-deriving it.
         """
         classified = classify_error(error, provider)
         error_message = str(error)[:150]
@@ -1716,7 +1718,7 @@ class RequestExecutor:
                 )
                 error_accumulator.record_error(credential, classified, error_message)
                 cred_context.mark_failure(classified)
-                return ErrorAction.FAIL
+                return ErrorAction.FAIL, classified
         else:
             retry_state.reset_quota_failures()
 
@@ -1724,7 +1726,7 @@ class RequestExecutor:
         if not should_rotate_on_error(classified):
             error_accumulator.record_error(credential, classified, error_message)
             cred_context.mark_failure(classified)
-            return ErrorAction.FAIL
+            return ErrorAction.FAIL, classified
 
         # Check if should retry same key (including small cooldown auto-retry)
         small_cooldown_threshold = int(
@@ -1775,7 +1777,7 @@ class RequestExecutor:
                     f"Retrying {mask_credential(credential)} in {wait_time:.1f}s{retry_reason}"
                 )
                 await asyncio.sleep(wait_time)
-                return ErrorAction.RETRY_SAME
+                return ErrorAction.RETRY_SAME, classified
             else:
                 lib_logger.info(
                     f"Skipping retry same key for {mask_credential(credential)} (wait {wait_time:.1f}s > {remaining:.1f}s remaining)"
@@ -1793,7 +1795,7 @@ class RequestExecutor:
         lib_logger.info(
             f"Rotating from {mask_credential(credential)} after {classified.error_type}"
         )
-        return ErrorAction.ROTATE
+        return ErrorAction.ROTATE, classified
 
     def _record_session_response(self, context: RequestContext, response: Any) -> None:
         """Let the tracker learn anchors emitted by a successful response.

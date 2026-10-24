@@ -272,3 +272,111 @@ Notes:
 - The default-path branch still prints a count that includes the main `.env`
   while the load loop skips it. Known cosmetic mismatch, left unchanged
   deliberately (out of scope for this change).
+
+## 2026-10-24 — Report upstream content policy violations clearly
+
+Target: `fix(core): report upstream content policy violations clearly`
+Files:
+- `src/rotator_library/error_handler.py`
+- `src/rotator_library/core/errors.py`
+- `src/rotator_library/providers/provider_interface.py`
+- `src/rotator_library/client/executor.py`
+- `src/rotator_library/client/rotating_client.py`
+- `src/rotator_library/client/cross_provider_executor.py`
+- `src/rotator_library/anthropic_compat/streaming.py`
+- `src/proxy_app/main.py`
+- `tests/test_content_policy_violation.py`
+
+Branch: `fix/badrequesterror`
+
+Behavior:
+- New `ProviderErrorType(StrEnum)` member `content_policy_violation`. There is no
+  `moderation` vocabulary in the codebase.
+- New `ProviderInterface.parse_content_policy_violation(error, error_body)` hook,
+  returning `None` by default. There is no shared marker table; detection is
+  provider specific. The base implementation enforces its own return type, so a
+  bad override raises `TypeError` at its first call.
+- `opencode_go` is the only override: it matches the two identifiers
+  `data_inspection_failed` and `DataInspectionFailed` and returns
+  `ContentPolicyViolation(reason=ContentPolicyReason.DATA_INSPECTION, marker=...)`.
+- `classify_error` asks the provider plugin before the generic 400 fallback and
+  returns `CONTENT_POLICY_VIOLATION` with HTTP 400. `should_rotate_on_error`
+  already returned `False` for `invalid_request`, so the error stays terminal and
+  no cross-provider fallback is attempted.
+- `TerminalRequestError` now carries the `ClassifiedError`, so `executor.py` no
+  longer classifies the same exception a second time.
+- New `build_terminal_error_response(error_type, model, provider)` is the single
+  client-facing builder; the streaming and non-streaming terminal paths both use
+  it. The client sees
+  `{"error": {"message", "type": "invalid_request", "code", "details": {...}}}`
+  and never the raw `litellm.BadRequestError` text.
+- One `lib_logger.warning` per content policy violation, naming
+  `<provider>/<model>` and the matched marker. The full raw upstream body still
+  goes to the failure logger unchanged.
+- Downstream layers (`proxy_app/main.py`, `anthropic_compat/streaming.py`,
+  `cross_provider_executor.py`) forward the clean message instead of
+  re-stringifying the exception. The Anthropic layer maps
+  `CONTENT_POLICY_VIOLATION` to `invalid_request_error`, not `api_error`.
+- `_attempt_fallback` no longer replaces the original `ProxyExhaustionError` with
+  a generic message.
+
+Verification:
+- `uv run pytest tests/test_content_policy_violation.py tests/test_error_handler.py -q` — passed
+- `uv run pytest -m "not e2e" -q` — 546 passed, 1 deselected
+- `uv run ruff check <changed files> --select F401,F811,F821,E9` — passed
+  (`anthropic_compat/streaming.py` keeps its pre-existing unused-`Any` warning,
+  which is present on `dev` too)
+- `uv run python3 -m py_compile` on every changed module — passed
+
+Notes:
+- Gemini `SAFETY -> content_filter` is a `finish_reason` on a 200 response, not an
+  error type, and is deliberately out of scope.
+- `responses_compat.py` silently dropping error chunks and `MODEL_FALLBACK_*`
+  being keyed by alias instead of resolved model name are known but out of scope.
+
+### 2026-10-24 — Review follow-up (`fixup!` into the commit above)
+
+Findings from the post-implementation review, folded into the same commit:
+
+- `RotatingClient._execute_with_fallback` now re-raises a terminal
+  `ProxyExhaustionError` before attempting `MODEL_FALLBACK_*`. Previously an
+  unguarded fallback call would run first and rely on `_attempt_fallback`'s own
+  refusal to surface the primary error; a reachable ordering bug if the refusal
+  path ever changed. Covered by
+  `test_configured_fallback_does_not_replace_content_policy_error`.
+- `CrossProviderExecutor` stops the alias fan-out for terminal codes in both the
+  non-streaming path (raises `ProxyExhaustionError` carrying the clean response
+  instead of `NoAvailableKeysError`) and the streaming path (forwards the
+  terminal SSE chunk instead of trying the next alias target).
+- `classify_error`'s hook guard no longer relies on a bare `except TypeError:
+  raise`. A `TypeError` raised *inside* a plugin is now logged and swallowed; only
+  the contract violation (wrong return type) propagates.
+- `anthropic_compat/streaming.py` no longer re-emits an upstream
+  `error.message` verbatim when the chunk carries no `code`. A coded chunk keeps
+  the message the builder already sanitized; an uncoded chunk gets a neutral
+  message, so a raw `litellm` string cannot reach an Anthropic client.
+- `_sanitized_openai_error` substitutes `"the requested model"` /
+  `"the upstream provider"` when `litellm` does not expose `.model` /
+  `.llm_provider`, instead of rendering empty strings.
+- `serialize_level` gained `check_legal_wire_value`, called from
+  `normalize_thinking`. An illegal value the resolver could produce now raises
+  instead of being silently dropped, so a future capability change fails loudly
+  at the request instead of shipping a bad wire value.
+
+Not changed, with reasons:
+- `_wrap_streaming_with_fallback` needs no terminal-code guard: it only inspects
+  chunks whose `error.type` is in `_STREAMING_EXHAUSTION_TYPES`, and terminal
+  errors carry `type: invalid_request`, so the guard would be unreachable dead
+  code. Verified by instrumenting `_attempt_fallback`; it is never called for a
+  content policy violation.
+- The hook still runs before the provider 429/5xx quota parse. A body carrying
+  both a content-policy marker and a quota mark is classified as content policy;
+  markers are exact upstream identifiers, so the collision is not reachable for
+  `opencode_go` today.
+- `ProviderInterface` does not enforce the hook's return type in the base class;
+  `classify_error` does, which is the only caller.
+
+Verification:
+- `uv run pytest -m "not e2e" -q` — 550 passed, 1 deselected
+- `uv run ruff check <changed files> --select F401,F811,F821,E9` — passed
+- `uv run python3 -m py_compile` on every changed module — passed

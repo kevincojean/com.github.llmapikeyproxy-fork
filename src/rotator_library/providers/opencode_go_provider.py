@@ -18,6 +18,7 @@ from .utilities.opencode_quota_tracker import OpencodeQuotaTracker
 from .utilities.opencode_go_thinking import ThinkingCapability, capability_for
 from ..model_definitions import ModelDefinitions
 from ..error_handler import mask_credential
+from ..core.errors import ContentPolicyReason, ContentPolicyViolation
 
 lib_logger = logging.getLogger("rotator_library")
 lib_logger.propagate = False
@@ -106,6 +107,31 @@ class OpencodeProvider(OpencodeQuotaTracker, ProviderInterface):
             return {"retry_after": retry_after, "reason": "rolling_quota_exhausted"}
 
         return {"retry_after": retry_after, "reason": "quota_exhausted"}
+
+    DATA_INSPECTION_MARKERS = ("data_inspection_failed", "DataInspectionFailed")
+
+    @classmethod
+    def parse_content_policy_violation(
+        cls, error: Exception, error_body: Optional[str] = None
+    ) -> Optional[ContentPolicyViolation]:
+        body = error_body or ""
+        if not body:
+            response = getattr(error, "response", None)
+            if response is not None:
+                body = getattr(response, "text", "") or ""
+        if not body:
+            raw_body = getattr(error, "body", None)
+            if raw_body:
+                body = raw_body if isinstance(raw_body, str) else str(raw_body)
+        if not body:
+            body = str(error)
+
+        for marker in cls.DATA_INSPECTION_MARKERS:
+            if marker in body:
+                return ContentPolicyViolation(
+                    reason=ContentPolicyReason.DATA_INSPECTION, marker=marker
+                )
+        return None
 
     # Quota groups: display-only time windows + a hidden global group for blocking.
     # The tiered windows (5hr < weekly < monthly) are for dashboard visibility.

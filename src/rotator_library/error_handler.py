@@ -5,6 +5,7 @@ import re
 import json
 import os
 import logging
+from enum import StrEnum
 from typing import Optional, Dict, Tuple
 import httpx
 
@@ -23,6 +24,21 @@ from litellm.exceptions import (
 )
 
 lib_logger = logging.getLogger("rotator_library")
+
+
+class ProviderErrorType(StrEnum):
+    RATE_LIMIT = "rate_limit"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    SERVER_ERROR = "server_error"
+    FORBIDDEN = "forbidden"
+    AUTHENTICATION = "authentication"
+    CREDENTIAL_REAUTH_NEEDED = "credential_reauth_needed"
+    PRE_REQUEST_CALLBACK_ERROR = "pre_request_callback_error"
+    INVALID_REQUEST = "invalid_request"
+    CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
+    CONTENT_POLICY_VIOLATION = "content_policy_violation"
+    API_CONNECTION = "api_connection"
+    UNKNOWN = "unknown"
 
 
 def _parse_duration_string(duration_str: str) -> Optional[int]:
@@ -225,20 +241,21 @@ class TransientQuotaError(Exception):
 # Abnormal errors that require attention and should always be reported to client
 ABNORMAL_ERROR_TYPES = frozenset(
     {
-        "forbidden",  # 403 - credential access issue
-        "authentication",  # 401 - credential invalid/revoked
-        "credential_reauth_needed",  # OAuth token invalidated, needs manual re-auth
-        "pre_request_callback_error",  # Internal proxy error
+        ProviderErrorType.FORBIDDEN,  # 403 - credential access issue
+        ProviderErrorType.AUTHENTICATION,  # 401 - credential invalid/revoked
+        ProviderErrorType.CREDENTIAL_REAUTH_NEEDED,  # OAuth token invalidated, needs manual re-auth
+        ProviderErrorType.PRE_REQUEST_CALLBACK_ERROR,  # Internal proxy error
+        ProviderErrorType.CONTENT_POLICY_VIOLATION,  # Upstream refused the input text
     }
 )
 
 # Normal/expected errors during operation - only report if ALL credentials fail
 NORMAL_ERROR_TYPES = frozenset(
     {
-        "rate_limit",  # 429 - expected during high load
-        "quota_exceeded",  # Expected when quota runs out
-        "server_error",  # 5xx - transient provider issues
-        "api_connection",  # Network issues - transient
+        ProviderErrorType.RATE_LIMIT,  # 429 - expected during high load
+        ProviderErrorType.QUOTA_EXCEEDED,  # Expected when quota runs out
+        ProviderErrorType.SERVER_ERROR,  # 5xx - transient provider issues
+        ProviderErrorType.API_CONNECTION,  # Network issues - transient
     }
 )
 
@@ -256,6 +273,42 @@ def is_abnormal_error(classified_error: "ClassifiedError") -> bool:
     - 5xx Server errors: Transient provider issues
     """
     return classified_error.error_type in ABNORMAL_ERROR_TYPES
+
+
+_TERMINAL_ERROR_MESSAGES = {
+    ProviderErrorType.CONTENT_POLICY_VIOLATION: (
+        "The provider {provider} refused the input text for model {model} "
+        "on content policy grounds. The request never reached the model. "
+        "Reword or shorten the input before retrying."
+    ),
+    ProviderErrorType.CONTEXT_WINDOW_EXCEEDED: (
+        "The input for model {model} exceeds the context window accepted by {provider}."
+    ),
+    ProviderErrorType.INVALID_REQUEST: (
+        "The provider {provider} rejected the request for model {model} as invalid."
+    ),
+}
+
+
+def build_terminal_error_response(
+    error_type: ProviderErrorType, model: str, provider: str
+) -> dict:
+    if error_type is ProviderErrorType.CONTENT_POLICY_VIOLATION:
+        lib_logger.warning(
+            f"content policy violation from {provider}/{model}: request refused upstream"
+        )
+    template = _TERMINAL_ERROR_MESSAGES.get(
+        error_type,
+        "The provider {provider} rejected the request for model {model}.",
+    )
+    return {
+        "error": {
+            "message": template.format(provider=provider, model=model),
+            "type": ProviderErrorType.INVALID_REQUEST,
+            "code": error_type,
+            "details": {"model": model, "provider": provider},
+        }
+    }
 
 
 def mask_credential(credential: str, style: str = "short") -> str:
@@ -413,16 +466,17 @@ class RequestErrorAccumulator:
         Within a tier, the most frequent type wins; ties broken by priority.
         """
         _PRIORITY = [
-            "context_window_exceeded",
-            "invalid_request",
-            "credential_reauth_needed",
-            "authentication",
-            "forbidden",
-            "rate_limit",
-            "quota_exceeded",
-            "server_error",
-            "api_connection",
-            "unknown",
+            ProviderErrorType.CONTENT_POLICY_VIOLATION,
+            ProviderErrorType.CONTEXT_WINDOW_EXCEEDED,
+            ProviderErrorType.INVALID_REQUEST,
+            ProviderErrorType.CREDENTIAL_REAUTH_NEEDED,
+            ProviderErrorType.AUTHENTICATION,
+            ProviderErrorType.FORBIDDEN,
+            ProviderErrorType.RATE_LIMIT,
+            ProviderErrorType.QUOTA_EXCEEDED,
+            ProviderErrorType.SERVER_ERROR,
+            ProviderErrorType.API_CONNECTION,
+            ProviderErrorType.UNKNOWN,
         ]
 
         # Abnormal errors take precedence
@@ -556,13 +610,14 @@ class ClassifiedError:
 
     def __init__(
         self,
-        error_type: str,
+        error_type: ProviderErrorType,
         original_exception: Exception,
         status_code: Optional[int] = None,
         retry_after: Optional[int] = None,
         quota_reset_timestamp: Optional[float] = None,
         quota_value: Optional[str] = None,
         quota_id: Optional[str] = None,
+        content_policy_marker: Optional[str] = None,
     ):
         self.error_type = error_type
         self.original_exception = original_exception
@@ -574,6 +629,8 @@ class ClassifiedError:
         # Quota details extracted from Google/Gemini API error responses
         self.quota_value = quota_value  # e.g., "50" or "1000/minute"
         self.quota_id = quota_id  # e.g., "GenerateContentPerMinutePerProject"
+        # Upstream identifier that proved the input text was refused
+        self.content_policy_marker = content_policy_marker
 
     def __str__(self):
         parts = [
@@ -887,13 +944,13 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
             # Map streamed error dicts to the same types as HTTP responses
             if status_code == 401 or status == "UNAUTHENTICATED" or code == "token_invalidated":
                 return ClassifiedError(
-                    error_type="authentication",
+                    error_type=ProviderErrorType.AUTHENTICATION,
                     original_exception=Exception(str(payload.get("message", e))),
                     status_code=401,
                 )
             if status_code == 403 or status == "PERMISSION_DENIED":
                 return ClassifiedError(
-                    error_type="forbidden",
+                    error_type=ProviderErrorType.FORBIDDEN,
                     original_exception=Exception(str(payload.get("message", e))),
                     status_code=403,
                 )
@@ -905,7 +962,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                     if m:
                         retry_after = int(m.group(1))
                 return ClassifiedError(
-                    error_type="rate_limit",
+                    error_type=ProviderErrorType.RATE_LIMIT,
                     original_exception=Exception(str(payload.get("message", e))),
                     status_code=429,
                     retry_after=retry_after,
@@ -915,7 +972,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                 "UNAVAILABLE",
             }:
                 return ClassifiedError(
-                    error_type="server_error",
+                    error_type=ProviderErrorType.SERVER_ERROR,
                     original_exception=Exception(str(payload.get("message", e))),
                     status_code=status_code or 503,
                 )
@@ -932,10 +989,51 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
         or "status INTERNAL" in error_text
     ):
         return ClassifiedError(
-            error_type="server_error",
+            error_type=ProviderErrorType.SERVER_ERROR,
             original_exception=e,
             status_code=500,
         )
+
+    if provider:
+        try:
+            from .core.errors import ContentPolicyViolation
+            from .providers import PROVIDER_PLUGINS
+
+            plugin = PROVIDER_PLUGINS.get(provider)
+            if plugin is not None:
+                body = None
+                if hasattr(e, "response") and hasattr(e.response, "text"):
+                    try:
+                        body = e.response.text
+                    except Exception:
+                        pass
+                elif hasattr(e, "body"):
+                    body = str(e.body)
+
+                violation = plugin.parse_content_policy_violation(e, body)
+                if not isinstance(violation, (ContentPolicyViolation, type(None))):
+                    raise TypeError(
+                        f"{provider}.parse_content_policy_violation returned "
+                        f"{type(violation).__name__}, expected ContentPolicyViolation or None"
+                    )
+                if violation is not None:
+                    return ClassifiedError(
+                        error_type=ProviderErrorType.CONTENT_POLICY_VIOLATION,
+                        original_exception=e,
+                        status_code=400,
+                        content_policy_marker=violation.marker,
+                    )
+        except TypeError as contract_error:
+            if "parse_content_policy_violation returned" not in str(contract_error):
+                lib_logger.debug(
+                    f"content policy parsing failed for '{provider}': {contract_error}"
+                )
+            else:
+                raise
+        except Exception as parse_error:
+            lib_logger.debug(
+                f"content policy parsing failed for '{provider}': {parse_error}"
+            )
 
     # Try provider-specific parsing first for 429/rate limit errors
     if provider:
@@ -978,7 +1076,11 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                         or _is_short_term_quota_error(error_body, quota_id)
                     )
 
-                    error_type = "rate_limit" if is_transient else "quota_exceeded"
+                    error_type = (
+                        ProviderErrorType.RATE_LIMIT
+                        if is_transient
+                        else ProviderErrorType.QUOTA_EXCEEDED
+                    )
 
                     if retry_after:
                         hours = retry_after / 3600
@@ -1020,7 +1122,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
 
         if status_code == 401:
             return ClassifiedError(
-                error_type="authentication",
+                error_type=ProviderErrorType.AUTHENTICATION,
                 original_exception=e,
                 status_code=status_code,
             )
@@ -1028,7 +1130,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
             # 403 Forbidden - credential doesn't have access, should rotate
             # Could be: IP restriction, account disabled, permission denied, etc.
             return ClassifiedError(
-                error_type="forbidden",
+                error_type=ProviderErrorType.FORBIDDEN,
                 original_exception=e,
                 status_code=status_code,
             )
@@ -1046,9 +1148,9 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                 except Exception:
                     pass
 
-                error_type = "quota_exceeded"
+                error_type = ProviderErrorType.QUOTA_EXCEEDED
                 if _is_short_term_quota_error(error_body, quota_id):
-                    error_type = "rate_limit"
+                    error_type = ProviderErrorType.RATE_LIMIT
 
                 return ClassifiedError(
                     error_type=error_type,
@@ -1059,7 +1161,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                     quota_id=quota_id,
                 )
             return ClassifiedError(
-                error_type="rate_limit",
+                error_type=ProviderErrorType.RATE_LIMIT,
                 original_exception=e,
                 status_code=status_code,
                 retry_after=retry_after,
@@ -1078,24 +1180,19 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                 ]
             ):
                 return ClassifiedError(
-                    error_type="context_window_exceeded",
+                    error_type=ProviderErrorType.CONTEXT_WINDOW_EXCEEDED,
                     original_exception=e,
                     status_code=status_code,
                 )
             return ClassifiedError(
-                error_type="invalid_request",
-                original_exception=e,
-                status_code=status_code,
-            )
-            return ClassifiedError(
-                error_type="invalid_request",
+                error_type=ProviderErrorType.INVALID_REQUEST,
                 original_exception=e,
                 status_code=status_code,
             )
         if 400 <= status_code < 500:
             # Other 4xx errors - generally client errors
             return ClassifiedError(
-                error_type="invalid_request",
+                error_type=ProviderErrorType.INVALID_REQUEST,
                 original_exception=e,
                 status_code=status_code,
             )
@@ -1129,7 +1226,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
             # of backing off and retrying the same credential.
             # Let the executor apply request-scoped retry pacing for transient 5xx.
             return ClassifiedError(
-                error_type="server_error",
+                error_type=ProviderErrorType.SERVER_ERROR,
                 original_exception=e,
                 status_code=status_code,
                 retry_after=None,
@@ -1137,12 +1234,12 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
 
     if isinstance(e, httpx.RequestError):  # [NEW] Captures NetworkError, Timeout, ProtocolError, etc
         return ClassifiedError(
-            error_type="api_connection", original_exception=e, status_code=status_code
+            error_type=ProviderErrorType.API_CONNECTION, original_exception=e, status_code=status_code
         )
 
     if isinstance(e, PreRequestCallbackError):
         return ClassifiedError(
-            error_type="pre_request_callback_error",
+            error_type=ProviderErrorType.PRE_REQUEST_CALLBACK_ERROR,
             original_exception=e,
             status_code=400,  # Treat as a bad request
         )
@@ -1150,7 +1247,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
     if isinstance(e, CredentialNeedsReauthError):
         # This is a rotatable error - credential is broken but re-auth is queued
         return ClassifiedError(
-            error_type="credential_reauth_needed",
+            error_type=ProviderErrorType.CREDENTIAL_REAUTH_NEEDED,
             original_exception=e,
             status_code=401,  # Treat as auth error for reporting purposes
         )
@@ -1159,7 +1256,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
         # Transient server-side issue - provider returned empty response
         # This is rotatable - try next credential
         return ClassifiedError(
-            error_type="server_error",
+            error_type=ProviderErrorType.SERVER_ERROR,
             original_exception=e,
             status_code=503,
         )
@@ -1168,7 +1265,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
         # Transient 429 without retry info - provider returned bare rate limit
         # This is rotatable - try next credential
         return ClassifiedError(
-            error_type="server_error",
+            error_type=ProviderErrorType.SERVER_ERROR,
             original_exception=e,
             status_code=503,
         )
@@ -1186,9 +1283,9 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
             except Exception:
                 pass
 
-            error_type = "quota_exceeded"
+            error_type = ProviderErrorType.QUOTA_EXCEEDED
             if _is_short_term_quota_error(str(error_body) if 'error_body' in locals() else error_msg, quota_id):
-                error_type = "rate_limit"
+                error_type = ProviderErrorType.RATE_LIMIT
 
             return ClassifiedError(
                 error_type=error_type,
@@ -1199,7 +1296,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
                 quota_id=quota_id,
             )
         return ClassifiedError(
-            error_type="rate_limit",
+            error_type=ProviderErrorType.RATE_LIMIT,
             original_exception=e,
             status_code=status_code or 429,
             retry_after=retry_after,
@@ -1207,28 +1304,28 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
 
     if isinstance(e, (AuthenticationError,)):
         return ClassifiedError(
-            error_type="authentication",
+            error_type=ProviderErrorType.AUTHENTICATION,
             original_exception=e,
             status_code=status_code or 401,
         )
 
     if isinstance(e, (InvalidRequestError, BadRequestError)):
         return ClassifiedError(
-            error_type="invalid_request",
+            error_type=ProviderErrorType.INVALID_REQUEST,
             original_exception=e,
             status_code=status_code or 400,
         )
 
     if isinstance(e, ContextWindowExceededError):
         return ClassifiedError(
-            error_type="context_window_exceeded",
+            error_type=ProviderErrorType.CONTEXT_WINDOW_EXCEEDED,
             original_exception=e,
             status_code=status_code or 400,
         )
 
     if isinstance(e, (APIConnectionError, Timeout)):
         return ClassifiedError(
-            error_type="api_connection",
+            error_type=ProviderErrorType.API_CONNECTION,
             original_exception=e,
             status_code=status_code or 503,  # Treat like a server error
         )
@@ -1238,7 +1335,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
         # cooldown because by the time they occur there may not be enough
         # budget left in the request timeout to wait 30 s.
         return ClassifiedError(
-            error_type="server_error",
+            error_type=ProviderErrorType.SERVER_ERROR,
             original_exception=e,
             status_code=status_code or 503,
             retry_after=None,
@@ -1253,7 +1350,7 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
         # of backing off and retrying the same credential.
         # Note: OpenAIError removed - it's too broad and can catch client errors
         return ClassifiedError(
-            error_type="server_error",
+            error_type=ProviderErrorType.SERVER_ERROR,
             original_exception=e,
             status_code=status_code or 503,
             retry_after=None,
@@ -1269,19 +1366,19 @@ def classify_error(e: Exception, provider: Optional[str] = None) -> ClassifiedEr
             for p in ["context window", "context_length", "too many tokens", "too long"]
         ):
             return ClassifiedError(
-                error_type="context_window_exceeded",
+                error_type=ProviderErrorType.CONTEXT_WINDOW_EXCEEDED,
                 original_exception=e,
                 status_code=400,
             )
         return ClassifiedError(
-            error_type="invalid_request",
+            error_type=ProviderErrorType.INVALID_REQUEST,
             original_exception=e,
             status_code=400,
         )
 
     # Fallback for any other unclassified errors
     return ClassifiedError(
-        error_type="unknown", original_exception=e, status_code=status_code
+        error_type=ProviderErrorType.UNKNOWN, original_exception=e, status_code=status_code
     )
 
 
@@ -1323,15 +1420,17 @@ def should_rotate_on_error(classified_error: ClassifiedError) -> bool:
     Errors that should NOT rotate (fail immediately):
     - invalid_request: Client error in request payload (won't help to retry)
     - context_window_exceeded: Request too large (won't help to retry)
+    - content_policy_violation: The same input text is refused on every key
     - pre_request_callback_error: Internal proxy error
 
     Returns:
         True if should rotate to next key, False if should fail immediately
     """
     non_rotatable_errors = {
-        "invalid_request",
-        "context_window_exceeded",
-        "pre_request_callback_error",
+        ProviderErrorType.INVALID_REQUEST,
+        ProviderErrorType.CONTEXT_WINDOW_EXCEEDED,
+        ProviderErrorType.CONTENT_POLICY_VIOLATION,
+        ProviderErrorType.PRE_REQUEST_CALLBACK_ERROR,
     }
     return classified_error.error_type not in non_rotatable_errors
 

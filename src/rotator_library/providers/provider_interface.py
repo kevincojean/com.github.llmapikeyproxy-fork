@@ -21,6 +21,8 @@ import litellm
 if TYPE_CHECKING:
     from ..usage import UsageManager
 
+from ..core.errors import ContentPolicyViolation
+
 
 # =============================================================================
 # SINGLETON METACLASS FOR PROVIDERS
@@ -498,6 +500,16 @@ class ProviderInterface(ABC, metaclass=SingletonABCMeta):
             }
         """
         return None  # Default: no provider-specific parsing
+
+    @staticmethod
+    def parse_content_policy_violation(
+        error: Exception, error_body: Optional[str] = None
+    ) -> Optional[ContentPolicyViolation]:
+        """Return None when this provider has no content policy knowledge.
+
+        A non-None result asserts the upstream refused the input text.
+        """
+        return None
 
     # =========================================================================
     # Per-Provider Usage Tracking Configuration

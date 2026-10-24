@@ -12,6 +12,9 @@ Note: The actual implementations remain in error_handler.py for backward
 compatibility. This module provides a cleaner import path.
 """
 
+from dataclasses import dataclass
+from enum import StrEnum
+
 # Re-export everything from error_handler
 from ..error_handler import (
     # Exception classes
@@ -22,7 +25,9 @@ from ..error_handler import (
     TransientQuotaError,
     # Error classification
     ClassifiedError,
+    ProviderErrorType,
     RequestErrorAccumulator,
+    build_terminal_error_response,
     classify_error,
     should_rotate_on_error,
     should_retry_same_key,
@@ -62,6 +67,17 @@ class StreamedAPIError(Exception):
         self.data = data
 
 
+class ContentPolicyReason(StrEnum):
+    DATA_INSPECTION = "data_inspection"
+    UNRECOGNISED = "unrecognised"
+
+
+@dataclass(frozen=True)
+class ContentPolicyViolation:
+    reason: ContentPolicyReason
+    marker: str
+
+
 class TerminalRequestError(Exception):
     """
     Sentinel exception that wraps a non-rotatable error (e.g. 404 NOT_FOUND).
@@ -77,9 +93,10 @@ class TerminalRequestError(Exception):
     swallowing clause and propagate it correctly.
     """
 
-    def __init__(self, original: Exception):
+    def __init__(self, original: Exception, classified=None):
         super().__init__(str(original))
         self.original = original
+        self.classified = classified
 
 
 class ProxyExhaustionError(Exception):
@@ -104,6 +121,7 @@ class ProxyExhaustionError(Exception):
     _CODE_TO_HTTP_STATUS: dict = {
         "context_window_exceeded": 400,
         "invalid_request": 400,
+        "content_policy_violation": 400,
         "authentication": 401,
         "credential_reauth_needed": 401,
         "forbidden": 403,
@@ -139,11 +157,15 @@ __all__ = [
     "EmptyResponseError",
     "TransientQuotaError",
     "StreamedAPIError",
+    "ContentPolicyReason",
+    "ContentPolicyViolation",
     "TerminalRequestError",
     "ProxyExhaustionError",
     # Error classification
     "ClassifiedError",
+    "ProviderErrorType",
     "RequestErrorAccumulator",
+    "build_terminal_error_response",
     "classify_error",
     "should_rotate_on_error",
     "should_retry_same_key",

@@ -16,12 +16,22 @@ import logging
 from typing import Any, AsyncGenerator, List, Optional, TYPE_CHECKING, Union
 
 from ..model_alias_registry import AliasTarget, ModelAliasRegistry
-from ..core.errors import NoAvailableKeysError
+from ..core.errors import NoAvailableKeysError, ProxyExhaustionError
 
 if TYPE_CHECKING:
     from ..client.rotating_client import RotatingClient
 
 lib_logger = logging.getLogger("rotator_library")
+
+TERMINAL_ERROR_CODES = frozenset(
+    {
+        "content_policy_violation",
+        "context_window_exceeded",
+        "invalid_request",
+        "authentication",
+        "forbidden",
+    }
+)
 
 
 class CrossProviderExecutor:
@@ -126,6 +136,11 @@ class CrossProviderExecutor:
                 # (RequestErrorAccumulator returns a dict with "error" key)
                 if isinstance(response, dict) and "error" in response:
                     error_msg = response["error"].get("message", "Unknown error")
+                    error_code = response["error"].get("code")
+                    if error_code in TERMINAL_ERROR_CODES:
+                        raise ProxyExhaustionError(
+                            response, dominant_code=error_code
+                        )
                     lib_logger.warning(
                         f"[{canonical_model}] Provider {target.provider} returned error: "
                         f"{error_msg}. Trying next provider."
@@ -137,6 +152,9 @@ class CrossProviderExecutor:
                     f"[{canonical_model}] Success via {target.provider}"
                 )
                 return response
+
+            except ProxyExhaustionError:
+                raise
 
             except NoAvailableKeysError as e:
                 lib_logger.warning(
@@ -225,6 +243,13 @@ class CrossProviderExecutor:
                                                 "proxy_all_credentials_exhausted",
                                                 "proxy_timeout",
                                             ):
+                                                error_code = (
+                                                    parsed["error"].get("code")
+                                                    or error_type
+                                                )
+                                                if error_code in TERMINAL_ERROR_CODES:
+                                                    yield chunk
+                                                    return
                                                 lib_logger.warning(
                                                     f"[{canonical_model}] Provider "
                                                     f"{target.provider} stream error: "
@@ -265,10 +290,12 @@ class CrossProviderExecutor:
             lib_logger.error(
                 f"[{canonical_model}] All {len(targets)} streaming providers exhausted."
             )
-            error_msg = str(last_error) if last_error else "All providers exhausted"
             error_data = {
                 "error": {
-                    "message": f"All providers exhausted for '{canonical_model}': {error_msg}",
+                    "message": (
+                        f"All providers exhausted for '{canonical_model}'. "
+                        "See proxy logs for the upstream failure details."
+                    ),
                     "type": "proxy_error",
                 }
             }
