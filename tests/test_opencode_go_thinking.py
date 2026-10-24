@@ -90,7 +90,7 @@ async def test_effort_family_drops_thinking(models_env, tmp_path):
         "trash-fallback", [{"role": "user", "content": "hi"}], tmp_path
     )
 
-    assert body["reasoning_effort"] == "no_think"
+    assert body["reasoning_effort"] == "none"
     assert "thinking" not in body
 
 
@@ -142,9 +142,57 @@ async def test_always_on_family_is_not_re_enabled(models_env, tmp_path):
     assert "thinking" not in body
 
 
+async def test_effort_family_can_turn_thinking_off(models_env, tmp_path):
+    models_env(
+        {
+            "glm-off": {
+                "id": "glm-5.2",
+                "options": {"extra_body": {"thinking": {"type": "disabled"}}},
+            }
+        }
+    )
+
+    body = await _upstream_body("glm-off", [{"role": "user", "content": "hi"}], tmp_path)
+
+    assert body["reasoning_effort"] == "none"
+
+
 async def test_effort_family_clamps_low_to_high(models_env, tmp_path):
     models_env({"glm": {"id": "glm-5.2", "options": {"reasoning_effort": "low"}}})
 
     body = await _upstream_body("glm", [{"role": "user", "content": "hi"}], tmp_path)
 
     assert body["reasoning_effort"] == "high"
+
+
+def test_every_family_emits_only_legal_values():
+    from rotator_library.providers.utilities.opencode_go_thinking import (
+        FAMILIES,
+        OFF_ALIASES,
+        ReasoningLevel,
+        normalize_thinking,
+        resolve_intent_and_level,
+        serialize_level,
+    )
+
+    for capability in FAMILIES.values():
+        for request in (
+            {"reasoning_effort": "none"},
+            {"reasoning_effort": "off"},
+            {"reasoning_effort": "low"},
+            {"reasoning_effort": "high"},
+            {"reasoning_effort": "max"},
+            {"thinking": {"type": "disabled"}},
+            {"thinking": {"type": "enabled"}},
+            {},
+        ):
+            intent, level = resolve_intent_and_level(request, capability, "probe")
+            value = serialize_level(level, capability)
+            assert value is None or value in capability.legal_wire_values
+            body = normalize_thinking(request, "probe", capability)
+            emitted = body.get("extra_body", {}).get("reasoning_effort")
+            if emitted is not None:
+                assert emitted in capability.legal_wire_values
+                assert emitted not in OFF_ALIASES or emitted == "none"
+            assert level is not ReasoningLevel.OFF or capability.off_value is not None
+

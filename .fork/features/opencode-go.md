@@ -92,3 +92,75 @@ Notes:
   (renamed from `test_option_from_alias_reaches_wire_body`) and `test_effort_family_drops_thinking`
   exercise the nested shape; the remaining four tests keep the flat shape.
 - `ProviderTransforms.apply_sync` remains unused dead code and was intentionally not extended.
+
+## 2026-10-24 — Send legal `reasoning_effort` values
+
+Target commit subject:
+`fix(opencode_go): send legal reasoning_effort values`
+
+Files changed:
+- `src/rotator_library/providers/utilities/opencode_go_thinking.py`
+- `tests/test_opencode_go_thinking.py`
+
+Branch: `fix/badrequesterror`
+
+Problem:
+- `hy3` / `hy4` declared `off_value = "no_think"`. The upstream accepts only
+  `max|xhigh|high|medium|low|minimal|none`, so every "thinking off" request was a
+  guaranteed 400.
+- Three distinct inputs collapsed to that value: config `thinking: {type: disabled}`,
+  config `reasoning_effort: "none"` (`none` is in `OFF_ALIASES`), and the Anthropic
+  compat layer emitting `reasoning_effort="disable"`. No config could avoid it.
+- `glm-5.2` / `glm-5.3` declared `(HIGH, MAX)` with no `off_value`, so an explicit
+  "off" request was silently dropped by the "no off switch" branch instead of
+  turning thinking off.
+
+Behavior:
+- `hy3`, `hy4`: `off_value = "none"`. Levels unchanged `(LOW, HIGH)`.
+- `glm-5.2`, `glm-5.3`: `off_value = "none"`. Levels stay `(HIGH, MAX)`; `low`
+  still clamps up to `high`, and `off` now turns thinking off.
+- `ThinkingCapability.__post_init__` no longer requires `OFF` to be present in
+  `levels` for an effort family to carry an `off_value`. Every other validation
+  is unchanged.
+- `serialize_level` now enforces a runtime postcondition: the emitted value must be
+  a member of `ThinkingCapability.legal_wire_values`. Anything else is dropped and
+  logged at warning, so the next model added cannot repeat this defect.
+- `NO_THINK` removed (no family needs it). `NO_NEED = "none"` still serves the
+  `gpt-*` families that list `OFF` explicitly.
+
+Verification:
+- `uv run pytest tests/test_opencode_go_thinking.py -q` — 8 passed
+- `uv run pytest -m "not e2e" -q` — 546 passed, 1 deselected
+- `uv run ruff check <changed files> --select F401,F811,F821,E9` — passed
+- `uv run python3 -m py_compile` on the changed modules — passed
+
+Notes:
+- `test_effort_family_drops_thinking` now expects `"none"`; it used to lock the bug in.
+- Added `test_every_family_serializes_only_legal_values`, a single invariant test
+  over all `FAMILIES` entries instead of a per-model matrix.
+- Live verification of whether `none` actually disables thinking (rather than
+  merely being the lowest effort) was not performed; the failure mode addressed
+  here is the 400, which `none` removes either way.
+
+### 2026-10-24 — Review follow-up (`fixup!` into the commit above)
+
+- `normalize_thinking` now calls `check_legal_wire_value` before serialisation. If
+  `resolve_intent_and_level` ever produces a level whose wire value is outside the
+  family's `legal_wire_values`, the request raises instead of silently dropping
+  `reasoning_effort`. The `serialize_level` drop-and-warn remains for the
+  defensive path.
+- The previous invariant test only restated `legal_wire_values`. It now drives
+  `resolve_intent_and_level` + `normalize_thinking` across eight request shapes
+  (`none`, `off`, `low`, `high`, `max`, `thinking: disabled`, `thinking: enabled`,
+  empty) for every `FAMILIES` entry, and asserts the emitted body value is legal,
+  that `no_think` is never emitted, and that `OFF` is never produced for a family
+  without an `off_value`.
+- Known, deliberately not changed: `deepseek-v4` declares `OFF` in its levels but
+  has no `off_value`, so `read_level("none")` (which maps to `OFF` via
+  `OFF_ALIASES`) resolves to `UNSET` and emits no `reasoning_effort`. It does not
+  send an illegal value, so it is outside this fix; turning thinking off for that
+  family would need `TOGGLE_AND_EFFORT` off-semantics work.
+
+Verification:
+- `uv run pytest tests/test_opencode_go_thinking.py -q` — 8 passed
+- `uv run pytest -m "not e2e" -q` — 550 passed, 1 deselected

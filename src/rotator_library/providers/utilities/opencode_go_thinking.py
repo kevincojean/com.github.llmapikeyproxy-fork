@@ -30,6 +30,7 @@ class ThinkingIntent(StrEnum):
 
 class ReasoningLevel(StrEnum):
     UNSET = "unset"
+    NONE = "none"
     OFF = "off"
     LOW = "low"
     MEDIUM = "medium"
@@ -55,8 +56,7 @@ LEVEL_BY_NAME = {
 
 OFF_ALIASES = frozenset({"none", "disable", "disabled", "off", "no_think"})
 
-NO_THINK = "no_think"
-NO_NEED = "none"
+NO_NEED = ReasoningLevel.NONE.value
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,13 @@ class ThinkingCapability:
         ):
             raise ValueError("OFF level requires an off_value or a toggle control")
 
+    @property
+    def legal_wire_values(self) -> Tuple[str, ...]:
+        allowed = tuple(level.value for level in self.levels)
+        if self.off_value is not None:
+            allowed = allowed + (self.off_value,)
+        return allowed
+
 
 UNKNOWN_CAPABILITY = ThinkingCapability(ThinkingControl.UNKNOWN)
 
@@ -93,13 +100,13 @@ FAMILIES: Dict[str, ThinkingCapability] = {
     "mimo-": ThinkingCapability(ThinkingControl.TOGGLE),
     "hy3": ThinkingCapability(
         ThinkingControl.EFFORT,
-        (ReasoningLevel.OFF, ReasoningLevel.LOW, ReasoningLevel.HIGH),
-        NO_THINK,
+        (ReasoningLevel.LOW, ReasoningLevel.HIGH),
+        ReasoningLevel.NONE.value,
     ),
     "hy4": ThinkingCapability(
         ThinkingControl.EFFORT,
-        (ReasoningLevel.OFF, ReasoningLevel.LOW, ReasoningLevel.HIGH),
-        NO_THINK,
+        (ReasoningLevel.LOW, ReasoningLevel.HIGH),
+        ReasoningLevel.NONE.value,
     ),
     "deepseek-v4": ThinkingCapability(
         ThinkingControl.TOGGLE_AND_EFFORT,
@@ -116,10 +123,14 @@ FAMILIES: Dict[str, ThinkingCapability] = {
     "qwen3.8-flash": ThinkingCapability(ThinkingControl.TOGGLE),
     "qwen3.8-max": ThinkingCapability(ThinkingControl.TOGGLE),
     "glm-5.2": ThinkingCapability(
-        ThinkingControl.EFFORT, (ReasoningLevel.HIGH, ReasoningLevel.MAX)
+        ThinkingControl.EFFORT,
+        (ReasoningLevel.HIGH, ReasoningLevel.MAX),
+        ReasoningLevel.NONE.value,
     ),
     "glm-5.3": ThinkingCapability(
-        ThinkingControl.EFFORT, (ReasoningLevel.HIGH, ReasoningLevel.MAX)
+        ThinkingControl.EFFORT,
+        (ReasoningLevel.HIGH, ReasoningLevel.MAX),
+        ReasoningLevel.NONE.value,
     ),
     "gpt-6-luna": ThinkingCapability(
         ThinkingControl.EFFORT,
@@ -255,9 +266,25 @@ def serialize_level(
 ) -> Optional[str]:
     if level is ReasoningLevel.UNSET:
         return None
-    if level is ReasoningLevel.OFF:
-        return capability.off_value
-    return level.value
+    value = capability.off_value if level is ReasoningLevel.OFF else level.value
+    if value is None or value not in capability.legal_wire_values:
+        lib_logger.warning(
+            f"dropping illegal reasoning_effort {value!r} for {capability.control.value} control"
+        )
+        return None
+    return value
+
+
+def check_legal_wire_value(
+    level: ReasoningLevel, capability: ThinkingCapability, model: str
+) -> None:
+    value = serialize_level(level, capability)
+    if level is ReasoningLevel.UNSET or value is not None:
+        return
+    raise ValueError(
+        f"{model} would be sent a reasoning_effort outside its legal wire values "
+        f"{capability.legal_wire_values}: resolve_intent_and_level produced {level.value!r}"
+    )
 
 
 def normalize_thinking(
@@ -267,6 +294,7 @@ def normalize_thinking(
         result = dict(kwargs)
     else:
         intent, level = resolve_intent_and_level(kwargs, capability, model)
+        check_legal_wire_value(level, capability, model)
         extra = kwargs.get(EXTRA_BODY)
         extra_out = dict(extra) if isinstance(extra, dict) else {}
         extra_out.pop(THINKING, None)
